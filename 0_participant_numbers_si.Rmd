@@ -1,0 +1,349 @@
+---
+title: "0_participant_numbers"
+author: "Jackie Kirshenbaum"
+date: "`r format(Sys.Date(), '%B %e %Y')`"
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+  html_notebook:
+    toc: yes
+    toc_float: yes
+editor_options:
+  chunk_output_type: console
+---
+
+# Libraries
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(scipub)
+library(kableExtra)
+library(skimr)
+library(arsenal)
+library(scipub)
+
+theme_set(theme_bw()); theme_update(panel.grid.minor = element_line(linetype = "solid",linewidth = .5),axis.title.x = element_text(face = "bold"),axis.title.y = element_text(face = "bold"))
+
+colorpalette <- c("#F17E0B", "#F5B7B1", "#999999","#BABDE1", "#F5B041", "#B5EAF0", "#CBD1D4",  "#CFE4EF") 
+```
+
+# Load data
+
+```{r,include=TRUE}
+setwd("/../../../../Jackie/sleep_and_suicide_2024-2025")
+# weekly stbs
+load("/../../../../../../riskdata_2025-01-06.Rda")
+
+riskdata_v4 %>%
+  dplyr::mutate(
+    ID = as.character(ID)
+  ) %>%
+  dplyr::group_by(ID) %>%
+  summarise(
+    n = n()
+  ) %>%
+  print(n=203)
+
+# sleep data
+load("/../../../../../Sleep/sleepdata_April232025.Rda")
+weekly_sleep <-
+  weekly_sleep_comb %>%
+  dplyr::group_by(ID) %>%
+  dplyr::mutate(
+    num_wks = n()
+  ) %>%
+  dplyr::select(ID:week_num_sleep_lead, num_wks, everything())
+
+
+# start and end dates from SR
+load("/../../../../../../../self_report_07_11_2024.Rda")
+# just selecting dates
+sr_dates <-
+  selfreport %>%
+  dplyr::select(
+    ID, starts_with("SelfReportDate")
+  ) %>%
+  dplyr::mutate(
+    study_start_date = SelfReportDate_0,
+    study_end_date = 
+      case_when(
+        is.na(SelfReportDate_1) & is.na(SelfReportDate_3) & is.na(SelfReportDate_6) ~ SelfReportDate_0,
+        !is.na(SelfReportDate_1) & is.na(SelfReportDate_3) & is.na(SelfReportDate_6) ~ SelfReportDate_1,
+        !is.na(SelfReportDate_3) & is.na(SelfReportDate_6) ~ SelfReportDate_3,
+        !is.na(SelfReportDate_6) ~ SelfReportDate_6
+      )
+  )
+```
+
+# Sleep -> Next Week SI
+
+## Merging risk and sleep data
+
+```{r}
+# renaming `end_date` to `week_start_wednesday` to merge
+lag_weekly_sleep <-
+  weekly_sleep %>%
+  dplyr::rename(
+    week_start_wednesday = end_date, # this is the end of the sleep week which should be the wednesday when ema is administered reflected over the prior week, so that the average tib (for instance) from 7/29-8/5 ends up aligning with the ema survey administered on 8/5
+    sleep_week_start_date = start_date
+    ) 
+
+lead_riskdataweek <-
+  riskdataweek %>%
+  dplyr::group_by(ID) %>%
+  dplyr::mutate(
+    missingness = N_risk_responses/25,
+    risk_SInum_future = lead(risk_SInum, n = 1),
+    risk_SIsig4_future = lead(risk_SIsig4, n = 1),
+    risk_SIsig3_future = lead(risk_SIsig3, n = 1)
+  ) %>%
+  dplyr::select(ID:risk_SInum, risk_SInum_future, risk_SIsig4, risk_SIsig4_future, risk_SIsig3, risk_SIsig3_future, everything()) %>%
+  dplyr::mutate(
+    ID = as.character(ID)
+  )
+
+lag_sleep_with_si_counts <-
+  left_join(lag_weekly_sleep, lead_riskdataweek, by = c('ID', 'week_start_wednesday')) %>%
+  left_join(sr_dates, by = "ID") %>%
+  dplyr::mutate(
+    week_match = 
+      case_when(date == week_start_wednesday ~ "TRUE", TRUE ~ NA)
+  ) %>%  
+  dplyr::select(ID, date, day, week_start_wednesday, week_match, week_num_sleep_lag, week_num_sleep_lead, riskweek, timeinbed_whole_week_mean, risk_SInum, risk_SInum_future, risk_SIsig4, risk_SIsig4_future, risk_SIsig3, risk_SIsig3_future, everything()) %>%
+  dplyr::mutate(
+    number_of_lead_weeks =
+      sum(week_match == TRUE, na.rm = TRUE),
+    missing_lead_weeks = number_of_lead_weeks/25
+  ) %>%  
+  dplyr::select(ID, date, day, week_start_wednesday, week_match, number_of_lead_weeks, week_num_sleep_lag, week_num_sleep_lead, riskweek, timeinbed_whole_week_mean, risk_SInum, risk_SInum_future, risk_SIsig4, risk_SIsig4_future, risk_SIsig3, risk_SIsig3_future, everything())
+
+# Summary of Lagged Sleep and Weekly STB
+lag_sleep_with_si_counts_sum <-
+  lag_sleep_with_si_counts %>%
+  dplyr::select(ID, number_of_lead_weeks, missing_lead_weeks) %>%
+  distinct()
+
+avg_num_wks <- mean(lag_sleep_with_si_counts_sum$number_of_lead_weeks) # 9.427586
+9.427586/25 # participants answered approx ~38% of surveys
+
+lag_sleep_with_si_counts_sum %>%
+  ggplot(
+    aes(
+      x = reorder(ID, -number_of_lead_weeks),
+      y = number_of_lead_weeks
+    )
+  ) +
+  geom_col() +
+  geom_hline(
+    yintercept = avg_num_wks, color = "red", linetype = "dashed", linewidth = 1
+  ) +
+  # theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5))
+  theme(axis.text.x = element_blank()) +
+  labs(
+    x = "Participant",
+    y = "Number of Weeks with Lagged Sleep Week and EMA Weekly Data"
+  )
+```
+
+```{r}
+lag_sleep_with_si_counts <-
+  lag_sleep_with_si_counts %>%
+  dplyr::group_by(ID) %>%
+  dplyr::mutate(
+    missing_weekly_stb = is.na(risk_SInum_future),
+    missing_weekly_sleep = is.na(timeinbed_whole_week_mean)
+  ) %>%
+  dplyr::mutate(
+    week_num = as.numeric(date - study_start_date)%/%7, # weeks since start of participation for each participant
+    week_num_time_z = as.numeric(scale(week_num, center = TRUE, scale = TRUE)),
+    schoolclosure = case_when(date > "2020-03-15" & date < "2021-03-22" ~ "1", TRUE ~ "0") 
+  ) %>%
+  dplyr::select(ID:day,number_of_lead_weeks, missing_lead_weeks, missing_weekly_sleep, missing_weekly_stb, schoolclosure, summer, study_start_date, week_start_wednesday, week_num, week_num_time_z, week_match, number_of_lead_weeks, timeinbed_whole_week_mean, risk_SInum, risk_SInum_future, risk_SIsig4, risk_SIsig4_future, risk_SIsig3, risk_SIsig3_future, timeinbed_whole_week_sd:riskThree, submit_time_hour:risk_daysback,  SelfReportDate_0:study_end_date)
+
+
+lag_sleep_with_si_counts_filt <-
+  lag_sleep_with_si_counts %>%
+  dplyr::select(
+    -c(date, day)
+  ) %>%
+  filter(week_match == TRUE) %>%
+  # filter(number_of_lead_weeks > 1) %>%
+  dplyr::select(-week_match)
+
+```
+
+# Sleep the night before reporting on SI
+
+```{r}
+night_prior <-
+  daily_sleep %>%
+  filter(
+    wday_name == "Wed" # this is the wednesday wake-up date, so sleep metrics on this date reflect that tuesday night's sleep
+  ) %>%
+  rename(
+     week_start_wednesday = dt_feature # dt_feature reflects the sleep_end datae
+  ) %>%
+  dplyr::mutate(
+    week_start_wednesday = as.Date(week_start_wednesday)
+  ) %>%
+  dplyr::select(-c(ends_with("_person"), n_total_obs))
+
+
+# lead_riskdataweek already defined above 
+prior_night_sleep_with_si_counts <-
+  left_join(night_prior,riskdataweek, by = c('ID', 'week_start_wednesday')) %>%
+  left_join(sr_dates, by = "ID") %>%
+  dplyr::mutate(
+    week_match = 
+      case_when(date == week_start_wednesday ~ "TRUE", TRUE ~ NA)
+  ) %>%  
+  dplyr::select(ID, date, day, week_start_wednesday, week_match, riskweek, sleep_start:bedtime, risk_SInum, risk_SIsig4, risk_SIsig3, everything()) %>%
+  group_by(ID) %>%
+  dplyr::mutate(
+    number_of_prior_night_weeks =
+      sum(week_match == TRUE, na.rm = TRUE)
+  ) %>%  
+  dplyr::select(ID, date, day, week_start_wednesday, week_match, number_of_prior_night_weeks, riskweek, sleep_start:bedtime, risk_SInum, risk_SIsig4, risk_SIsig3, everything())
+
+# Summary of Prior-night sleep and Weekly STB
+prior_night_sleep_with_si_counts_sum <-
+  prior_night_sleep_with_si_counts %>%
+  dplyr::select(ID, number_of_prior_night_weeks) %>%
+  distinct()
+
+avg_num_wks <- mean(prior_night_sleep_with_si_counts_sum$number_of_prior_night_weeks)
+
+prior_night_sleep_with_si_counts_sum %>%
+  ggplot(
+    aes(
+      x = reorder(ID, -number_of_prior_night_weeks),
+      y = number_of_prior_night_weeks
+    )
+  ) +
+  geom_col() +
+  geom_hline(
+    yintercept = avg_num_wks, color = "red", linetype = "dashed", linewidth = 1
+  ) +
+  # theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5))
+  theme(axis.text.x = element_blank()) +
+  labs(
+    x = "Participant",
+    y = "Number of Weeks with Prior Night Sleep and EMA Weekly Data"
+  )
+```
+
+```{r}
+prior_night_sleep_with_si_counts <-
+  prior_night_sleep_with_si_counts %>%
+  dplyr::group_by(ID) %>%
+  dplyr::mutate(
+    missing_weekly_stb = is.na(riskOne),
+    missing_weekly_sleep = is.na(timeinbed)
+  ) %>%
+  dplyr::mutate(
+    week_num = as.numeric(date - study_start_date)%/%7, # weeks since start of participation for each participant
+    week_num_time_z = as.numeric(scale(week_num, center = TRUE, scale = TRUE)),
+    schoolclosure = case_when(date > "2020-03-15" & date < "2021-03-22" ~ "1", TRUE ~ "0")     
+  ) %>%
+  dplyr::select(ID:day, schoolclosure, summer, study_start_date, week_start_wednesday, week_num, week_num_time_z, week_match, number_of_prior_night_weeks, timeinbed, bedtime, risk_SInum, risk_SIsig4, everything())
+
+
+prior_night_sleep_with_si_counts_filt <-
+  prior_night_sleep_with_si_counts %>%
+  dplyr::select(
+    -c(date, day)
+  ) %>%
+  filter(week_match == TRUE) %>%
+  # filter(number_of_prior_night_weeks > 1) %>%
+  dplyr::select(-week_match)
+
+```
+
+# SI -> Next Week Sleep
+
+## Merging risk and sleep data
+
+```{r}
+# renaming `end_date` to `week_start_wednesday` to merge
+lead_weekly_sleep <-
+  weekly_sleep %>%
+  dplyr::rename(
+    week_start_wednesday = start_date
+    ) 
+
+lead_sleep_with_si_counts <-
+  left_join(lead_weekly_sleep, riskdataweek, by = c('ID', 'week_start_wednesday')) %>%
+  left_join(sr_dates, by = "ID") %>%
+  dplyr::mutate(
+    week_match = 
+      case_when(date == week_start_wednesday ~ "TRUE", TRUE ~ NA)
+  ) %>%  
+  dplyr::select(ID, date, day, week_start_wednesday, week_match, week_num_sleep_lag, week_num_sleep_lead, riskweek, timeinbed_whole_week_mean, risk_SInum, everything()) %>%
+  dplyr::group_by(ID) %>%
+  dplyr::mutate(
+    number_of_lead_weeks =
+      sum(week_match == TRUE, na.rm = TRUE)
+  ) %>%  
+  dplyr::select(ID, date, day, week_start_wednesday, week_match, number_of_lead_weeks, week_num_sleep_lag, week_num_sleep_lead, riskweek, timeinbed_whole_week_mean, risk_SInum, everything())
+
+# Summary of Lead Sleep and Weekly STB
+lead_sleep_with_si_counts_sum <-
+  lead_sleep_with_si_counts %>%
+  dplyr::select(ID, number_of_lead_weeks) %>%
+  distinct()
+
+avg_num_wks <- mean(lead_sleep_with_si_counts_sum$number_of_lead_weeks)
+
+lead_sleep_with_si_counts_sum %>%
+  ggplot(
+    aes(
+      x = reorder(ID, -number_of_lead_weeks),
+      y = number_of_lead_weeks
+    )
+  ) +
+  geom_col() +
+  geom_hline(
+    yintercept = avg_num_wks, color = "red", linetype = "dashed", linewidth = 1
+  ) +
+  # theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5))
+  theme(axis.text.x = element_blank()) +
+  labs(
+    x = "Participant",
+    y = "Number of Weeks with Leading Sleep Week and EMA Weekly Data"
+  )
+```
+
+```{r}
+lead_sleep_with_si_counts <-
+  lead_sleep_with_si_counts %>%
+  dplyr::group_by(ID) %>%
+  dplyr::mutate(
+    missing_weekly_stb = is.na(riskOne),
+    missing_weekly_sleep = is.na(timeinbed_whole_week_mean)
+  ) %>%
+  dplyr::mutate(
+    week_num = as.numeric(date - study_start_date)%/%7, # weeks since start of participation for each participant
+    week_num_time_z = as.numeric(scale(week_num, center = TRUE, scale = TRUE)),
+    schoolclosure = case_when(date > "2020-03-15" & date < "2021-03-22" ~ "1", TRUE ~ "0") 
+  ) %>%
+  dplyr::select(ID:day, schoolclosure, summer, study_start_date, week_start_wednesday, week_num, week_num_time_z, week_match, number_of_lead_weeks, timeinbed_whole_week_mean, risk_SInum, timeinbed_whole_week_sd:riskThree, submit_time_hour:risk_daysback, missing_weekly_sleep, SelfReportDate_0:study_end_date)
+
+
+lead_sleep_with_si_counts_filt <-
+  lead_sleep_with_si_counts %>%
+  dplyr::select(
+    -c(date, day)
+  ) %>%
+  filter(week_match == TRUE) %>%
+  # filter(number_of_lead_weeks > 1) %>%
+  dplyr::select(-week_match)
+
+```
+
+
+```{r}
+save(file = format(Sys.Date(), 'weekly_sleep_si_cleaned_%B%e%Y.Rda'), list=c("lag_sleep_with_si_counts_filt", "prior_night_sleep_with_si_counts_filt", "lead_sleep_with_si_counts_filt"))
+```
+

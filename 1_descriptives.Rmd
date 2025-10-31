@@ -1,0 +1,1112 @@
+---
+title: "1_descriptives"
+author: "Jackie Kirshenbaum"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+  html_notebook:
+    toc: yes
+    toc_float: yes
+editor_options:
+  chunk_output_type: console
+---
+
+# Libraries
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(scipub)
+library(kableExtra)
+library(skimr)
+library(arsenal)
+library(scipub)
+library(lubridate)
+library(ltm)
+library(lmerTest)
+library(ggsignif)
+
+theme_set(theme_bw()); theme_update(panel.grid.minor = element_line(linetype = "solid",linewidth = .5),axis.title.x = element_text(face = "bold"),axis.title.y = element_text(face = "bold"))
+
+colorpalette <- c("#F17E0B", "#F5B7B1", "#999999","#BABDE1", "#F5B041", "#B5EAF0", "#CBD1D4",  "#CFE4EF") 
+
+```
+
+
+# Load data
+
+```{r}
+# sleep and si
+load("/Volumes/columbia/MAPS_Data/Analysis/Jackie/sleep_and_suicide_2024-2025/weekly_sleep_si_cleaned_October 82025.Rda")
+# concurr_sleep_with_si_counts_filt = df with sleep week concurrent to EMA reporting period 
+# lead_sleep_with_si_counts_filt = df with future sleep week relative to EMA administration
+
+# sleep and se
+load("/../../../../Jackie/sleep_and_suicide_2024-2025/weekly_sleep_se_cleaned_October 82025.Rda")
+
+load("/../../../../../Sleep/sleepdata_April232025.Rda")
+
+# SR
+load("/../../../../../../../self_report_07_11_2024.Rda")
+
+# Service use
+load("/../../../../../../service_use.Rda")
+
+selfreport <-
+  selfreport %>%
+  dplyr::mutate(
+    study_start_date = SelfReportDate_0
+  )
+  # dplyr::select(-c(SelfReportDate_0:SelfReportDate_6))
+
+selfreport_itemwise <-
+  selfreport_itemwise %>%
+  dplyr::select(
+    ID, starts_with("psqi"), starts_with("meq"), starts_with("ssi"), starts_with("mfq"), starts_with("shaps"), starts_with("scared")
+    )
+
+
+#### Those with any psych med throughout the study ####
+psych_med_ids <-
+  su_long %>%
+  dplyr::group_by(ID) %>%
+  dplyr::mutate(
+    any_psych_med = 
+      ifelse(
+        curr == "1", "1", "0"
+    )
+  ) %>%
+  filter(any_psych_med == "1") %>%
+  distinct(ID) # 165 of 223 participants were on any psych med throughout the study (11%)
+
+#### Those with a change from med to non-med (or vice versa) ####
+psych_med_change_ids <-
+  su_long %>%
+  filter(changed == TRUE) %>%
+  distinct(ID) # psych med use changed for 35 out of 223 participants (11%)
+
+su <-
+  su %>% 
+  dplyr::mutate(
+    psych_med_change = 
+      ifelse(
+        ID %in% psych_med_change_ids$ID, 1, 0
+      ),
+    any_psych_med = 
+      ifelse(
+        ID %in% psych_med_ids$ID, 1, 0
+      )
+  ) %>%
+  dplyr::select(ID, psych_med_change, any_psych_med)
+```
+
+# Merging sleep, SI, and SR
+
+```{r}
+## For sleep -> si (lagged df)
+merge_si_df_lag <-
+  lag_sleep_with_si_counts_filt %>%
+  dplyr::select(
+    -c(SelfReportDate_0:SelfReportDate_6, study_start_date)
+  ) %>%
+  left_join(
+    selfreport, by = "ID"
+  ) %>%
+  dplyr::select(
+    -c(starts_with("psqi"))
+  ) %>%
+  left_join(
+    su, by = "ID"
+  )
+
+merge_si_df_lag <-
+  left_join(
+    merge_si_df_lag, selfreport_itemwise, by = "ID"
+  )
+```
+
+# Merging sleep, SE, and SR
+
+```{r}
+merge_se_df_lag <-
+  left_join(
+    weekly_with_stb, selfreport, by = "ID"
+  ) %>%
+  dplyr::select(
+    -c(starts_with("psqi"))
+  ) %>%
+  left_join(
+    su, by = "ID"
+  )   
+
+merge_se_df_lag <-
+  left_join(
+    merge_se_df_lag, selfreport_itemwise, by = "ID"
+  )
+```
+
+# Selecting variables for SE df
+
+```{r}
+merge_se_select <-
+  merge_se_df_lag %>%
+  dplyr::select(ID, SITE, sex, gender, race, hispanic, age, income, GROUP, SelfReportDate_1:SelfReportDate_6, iPhone, starts_with("psqi"), starts_with("SSI"), sitbi_si_lifetime_i, sitbi_si_pastmonth_i, sitbi_si_pastweek_i, starts_with("MEQ"), starts_with("MFQ"), starts_with("SCARED"), starts_with("SHAPS"), study_start_date, start_date_week_wednesday, schoolclosure, summer, week_num, timeinbed_whole_week_mean:event_cat1_2wk, starts_with("meq"), starts_with("ssi"), starts_with("mfq"), starts_with("shaps"), starts_with("scared"), psych_med_change, any_psych_med) %>%
+  dplyr::mutate(
+    ID = as.character(ID),
+    hispanic = factor(hispanic),
+    GROUP = factor(GROUP),
+    sex = factor(sex),
+    gender = factor(gender),
+    iPhone = factor(iPhone),
+    schoolclosure = factor(schoolclosure),
+    summer = factor(summer),
+    psych_med_change = factor(psych_med_change),
+    any_psych_med = factor(any_psych_med)
+      )
+
+merge_se_select$GROUP <- relevel(merge_se_select$GROUP, ref = "Control")   
+merge_se_select$sex <- relevel(merge_se_select$sex, ref = "M")  
+merge_se_select$gender <- relevel(merge_se_select$gender, ref = "M") 
+```
+
+# Selecting variables for SI df
+
+```{r}
+# lagged df
+merge_si_select_lag <-
+  merge_si_df_lag %>%
+  dplyr::select(ID, SITE, sex, gender, race, hispanic, age, income, GROUP, SelfReportDate_0:SelfReportDate_6, iPhone, starts_with("psqi"), starts_with("SSI"), sitbi_si_lifetime_i, sitbi_si_pastmonth_i, sitbi_si_pastweek_i, starts_with("MEQ"), starts_with("MFQ"), starts_with("SCARED"), starts_with("SHAPS"), study_start_date, schoolclosure, summer, week_num, week_start_wednesday:number_of_lead_weeks, timeinbed_whole_week_mean:risk_SA, starts_with("meq"), starts_with("ssi"), starts_with("mfq"), starts_with("shaps"), starts_with("scared"), psych_med_change, any_psych_med) %>%
+  dplyr::mutate(
+    ID = as.character(ID),
+    hispanic = factor(hispanic),
+    GROUP = factor(GROUP),
+    sex = factor(sex),
+    gender = factor(gender),
+    iPhone = factor(iPhone),
+    psych_med_change = factor(psych_med_change),
+    any_psych_med = factor(any_psych_med)    
+      )
+
+merge_si_select_lag$GROUP <- relevel(merge_si_select_lag$GROUP, ref = "Control")   
+merge_si_select_lag$sex <- relevel(merge_si_select_lag$sex, ref = "M")  
+merge_si_select_lag$gender <- relevel(merge_si_select_lag$gender, ref = "M")  
+
+# Observations count
+merge_si_select_lag %>%
+  dplyr::group_by(ID) %>%
+  dplyr::mutate(
+    si_3_total = sum(risk_SIsig3_future == 1, na.rm = TRUE),
+    si_4_total = sum(risk_SIsig4_future == 1, na.rm = TRUE)
+    ) %>%
+  dplyr::select(ID, si_3_total, si_4_total) %>%
+  distinct() %>%
+  dplyr::mutate(
+    any_riskSIsig3 = 
+      ifelse(
+        si_3_total > 0, 1, 0
+      ),
+    any_riskSIsig4 =
+      ifelse(
+        si_4_total > 0, 1, 0
+      )
+  ) %>%
+  dplyr::ungroup() %>%
+  dplyr::summarise(
+    n_sig3 = sum(any_riskSIsig3 == 1),
+    n_sig4 = sum(any_riskSIsig4 == 1)
+  )
+
+# 66 people had sub-clinical significant SI
+# 33 people had clinically significant SI
+
+merge_si_select_lag %>%
+  dplyr::group_by(ID) %>%
+  dplyr::mutate(
+    si_3_total = sum(risk_SIsig3_future == 1, na.rm = TRUE),
+    si_4_total = sum(risk_SIsig4_future == 1, na.rm = TRUE)
+    ) %>%
+  dplyr::select(ID, si_3_total, si_4_total) %>%
+  distinct() %>%
+  dplyr::ungroup() %>%
+  dplyr::summarise(
+    n_sig3 = sum(si_3_total),
+    n_sig4 = sum(si_4_total)
+  )
+
+# 66 people had a total of 224 weekly instances of significant SI
+# 33 people had a total of 66 weekly instances of clinically significant SI
+33/145 # percentage of those with clinically significant SI
+```
+
+
+## Sample descriptives
+Using the larger sample df (`merge_se_df_lag`) for sample descriptives
+
+```{r}
+# pulling out person variables
+merge_se_select_desc <-
+  merge_se_select %>%
+  dplyr::ungroup() %>%
+  dplyr::select(
+    ID, age, sex, gender, race, hispanic, SITE, income, iPhone, GROUP, timeinbed_mean_person, timeinbed_sd_person, bedtime_mean_person, bedtime_sd_person, starts_with("psqi"), starts_with("meq"), starts_with("ssi"), starts_with("mfq"), starts_with("shaps"), starts_with("scared"), psych_med_change, any_psych_med
+  ) %>%
+  distinct() # 145 pts
+
+
+# making table 
+demo_table_full <-
+  FullTable1(
+    data = merge_se_select_desc,
+    strata = NULL,
+    c("age", "sex", "gender", "race", "hispanic", "SITE", "income", "iPhone", "GROUP", "timeinbed_mean_person",  "bedtime_mean_person", "psych_med_change", "any_psych_med"),
+    stars = "name", html = F)$table
+
+kable(demo_table_full) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed")
+    )
+write_csv(demo_table_full, "demo_table_n145.csv")
+
+demo_table_by_GROUP <-
+  FullTable1(
+    data = merge_se_select_desc,
+    strata = "GROUP",
+    c("age", "sex", "gender", "race", "hispanic", "SITE", "income", "iPhone", "timeinbed_mean_person",  "bedtime_mean_person"),
+    stars = "name", html = F)$table
+
+kable(demo_table_by_GROUP) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed")
+    )
+write_csv(demo_table_by_GROUP, "demo_table_n145_byGroup.csv")
+```
+
+```{r}
+# creating sleep bins based on self report dates for concurrent time-locked data
+merge_se_select <- 
+  merge_se_select %>%
+  dplyr::group_by(ID) %>%
+  dplyr::mutate(
+    sleep_feature_month = 
+      case_when(
+        # condition 1
+        start_date_week_wednesday >= study_start_date & start_date_week_wednesday < SelfReportDate_1 ~ "bl_to_month_1",
+        # condition 2
+        start_date_week_wednesday >= study_start_date & is.na(SelfReportDate_1) & is.na(SelfReportDate_3) & is.na(SelfReportDate_6) ~ "bl_onward", # no followups
+        # condition 3
+        start_date_week_wednesday >= study_start_date & is.na(SelfReportDate_1) & start_date_week_wednesday < SelfReportDate_3 ~ "bl_to_month_3",
+        # condition 4
+        start_date_week_wednesday >= SelfReportDate_1 & start_date_week_wednesday < SelfReportDate_3 ~ "month_1_to_month_3",
+        # condition 5
+        start_date_week_wednesday >=SelfReportDate_1 & is.na(SelfReportDate_3) & is.na(SelfReportDate_6) ~ "month_1_onward", # no month 3 / month 6 followup
+        # condition 6
+        start_date_week_wednesday >= SelfReportDate_1 & is.na(SelfReportDate_3) & start_date_week_wednesday < SelfReportDate_6 ~ "month1_to_month_6",
+        # condition 7
+        start_date_week_wednesday >= SelfReportDate_3 & start_date_week_wednesday < SelfReportDate_6  ~ "month_3_to_month_6",
+        # condition 8
+        start_date_week_wednesday >= SelfReportDate_3 & is.na(SelfReportDate_6) ~ "month_3_onward" # no month 6 followup
+        ),
+    sleep_feature_month = as.factor(sleep_feature_month)
+    )  %>%
+  dplyr::select(ID:SelfReportDate_6, start_date_week_wednesday, sleep_feature_month, everything()) %>%
+  ungroup() 
+```
+
+# Internal Consistencies
+
+```{r}
+# meq
+meq <-
+  merge_se_select_desc %>%
+  dplyr::select(
+    starts_with("meq"), -MEQ_total_i
+  ) %>%
+  drop_na()
+cronbach.alpha(meq, standardized = TRUE, CI = TRUE) # 0.77
+# 	missing 2082, 2102 baseline data
+
+# psqi
+psqi <-
+  merge_se_select_desc %>%
+  dplyr::select(
+    psqislpqual_c1, psqilaten_c2, psqidurat_c3, psqihse_c4, psqidistb_c5, psqimeds_c6, psqidaydys_c7
+  ) %>%
+  drop_na()
+cronbach.alpha(psqi, standardized = TRUE, CI = TRUE) # 0.672
+
+# ssi
+ssi <-
+  merge_se_select_desc %>%
+  dplyr::select(
+    ssi_1_i:ssi_5_i
+  ) %>%
+  drop_na()
+cronbach.alpha(ssi, standardized = TRUE, CI = TRUE) # 0.837
+
+# mfq
+mfq <-
+  merge_se_select_desc %>%
+  dplyr::select(
+    mfq_1_i:mfq_13_i
+  ) %>%
+  drop_na()
+cronbach.alpha(mfq, standardized = TRUE, CI = TRUE) # 0.882
+
+
+# shaps
+shaps <-
+  merge_se_select_desc %>%
+  dplyr::select(
+    shaps_1_i:shaps_14_i
+  ) %>%
+  drop_na()
+cronbach.alpha(shaps, standardized = TRUE, CI = TRUE) # 0.88
+
+# scared
+scared <-
+  merge_se_select_desc %>%
+  dplyr::select(
+    starts_with("scared")
+  ) %>%
+  drop_na()
+cronbach.alpha(scared, standardized = TRUE, CI = TRUE) # 0.93
+```
+
+# Alignment of EARS chronotype: sleep midpoint in relation to self-reported circadian pref 
+> in case anyone wants to know
+
+MEQ: the higher the score, the more of a "morning" person you are
+
+## Creating dataframe
+
+```{r}
+# sleep features mean bl to 1 mo
+ears_sleep_features_bl_to_1mo <-
+  merge_se_select %>%
+  dplyr::select(ID, start_date_week_wednesday, sleep_feature_month, Midpoint_Roenne_whole_week_mean, Midpoint_Roenne_mean_free_night, timeinbed_whole_week_mean, bedtime_whole_week_mean, risetime_whole_week_mean, MEQ_total_i, starts_with("psqi"), age, sex, iPhone) %>%
+  filter(sleep_feature_month == "bl_to_month_1") %>%
+  dplyr::group_by(ID) %>%
+  dplyr::mutate(
+    midpoint_roenne_mean_free_night_bl_to_month_1 = mean(Midpoint_Roenne_mean_free_night),
+    midpoint_roenne_mean_bl_to_month_1 = mean(Midpoint_Roenne_whole_week_mean),
+    tib_mean_bl_to_month_1 = mean(timeinbed_whole_week_mean),
+    bedtime_mean_bl_to_month_1 = mean(bedtime_whole_week_mean),
+    risetime_mean_bl_to_month_1 = mean(risetime_whole_week_mean)
+  ) %>%
+  dplyr::select(ID, sleep_feature_month,  MEQ_total_i, starts_with("psqi"), age, sex, iPhone,  midpoint_roenne_mean_free_night_bl_to_month_1, midpoint_roenne_mean_bl_to_month_1, tib_mean_bl_to_month_1, bedtime_mean_bl_to_month_1, risetime_mean_bl_to_month_1) %>%
+  distinct() %>%
+  ungroup() %>%
+  dplyr::mutate(
+    psqidurat = 
+      ifelse(
+        psqidurat < 150, psqidurat*60, psqidurat
+      ),
+    psqitib = 
+      ifelse(
+        psqi_4b_i > 18 & psqi_4b_i < 120, NA_real_, psqi_4b_i
+      ),
+    psqitib =
+      ifelse(
+        psqitib < 150, psqitib*60, psqitib
+      )
+  )
+
+```
+
+## Visualization and Model
+
+```{r}
+# sleep midpoint mean bl to one month (CHRONOTYPE / MIDPOINT ON FREE NIGHTS)
+ears_sleep_features_bl_to_1mo %>%
+  drop_na(midpoint_roenne_mean_free_night_bl_to_month_1) %>% # n=98
+  ggplot(
+    aes(
+      x = MEQ_total_i, y = midpoint_roenne_mean_free_night_bl_to_month_1
+    )
+  ) +
+  geom_point(color = "#F17E0B", alpha = .5) +
+  geom_smooth(method = "lm", color = "#F17E0B") +
+  labs(
+    x = "Self-reported Morningness at BL",
+    y = "Midpoint of Sleep on Weekends \nfrom BL to 1-Month"
+  )
+  
+chron_mod <- lm(scale(midpoint_roenne_mean_free_night_bl_to_month_1) ~ scale(MEQ_total_i) + scale(age) + sex + iPhone, data = ears_sleep_features_bl_to_1mo) # sig
+summary(chron_mod)
+confint(chron_mod, level=0.95)
+ggsave("FigureX_chronotype_meq.jpeg", width = 5, height = 4)
+
+
+# tib mean bl to one month
+ears_sleep_features_bl_to_1mo %>%
+  ggplot(
+    aes(
+      x = psqitib, y = tib_mean_bl_to_month_1
+    )
+  ) +
+  geom_point(color = "#F5B7B1", alpha = .5) +
+  geom_smooth(method = "lm", color = "#F5B7B1") +
+  labs(
+    x = "Self-reported TIB at BL",
+    y = "TIB \nfrom BL to 1-Month"
+  )
+  
+psqi_mod <- lm(scale(tib_mean_bl_to_month_1) ~ scale(psqitib), data = ears_sleep_features_bl_to_1mo) 
+summary(psqi_mod)
+confint(psqi_mod, level=0.95)
+
+
+```
+
+# Histograms for Weekly Sleep Data
+
+## Whole-Week
+
+```{r}
+tib_mean <-
+  merge_se_select %>%
+  ggplot(
+    aes(x = timeinbed_whole_week_mean)
+  ) +
+  geom_histogram() +
+  labs(
+    x = "Average Weekly Sleep Duration"
+  ) +
+  theme_classic()
+
+tib_sd <-
+  merge_se_select %>%
+  ggplot(
+    aes(x = timeinbed_whole_week_sd)
+  ) +
+  geom_histogram() +
+  labs(
+    x = "Variability of Weekly Sleep Duration"
+  ) +
+  theme_classic()
+
+bedtime_mean <-
+  merge_se_select %>%
+  ggplot(
+    aes(x = bedtime_whole_week_mean)
+  ) +
+  geom_histogram() +
+  labs(
+    x = "Average Weekly Bedtime"
+  ) +
+  theme_classic()
+
+bedtime_sd <-
+  merge_se_select %>%
+  ggplot(
+    aes(x = bedtime_whole_week_sd)
+  ) +
+  geom_histogram() +
+  labs(
+    x = "Variability of Weekly Bedtime"
+  )  +
+  theme_classic()
+
+
+descriptives_sleep <- cowplot::plot_grid(tib_mean, tib_sd, bedtime_mean, bedtime_sd, labels = c('A', 'B', 'C', 'D'))
+cowplot::save_plot(descriptives_sleep, base_height = 8, base_width = 13, filename = 'Supp_Figure2_descriptives.jpeg')
+```
+
+## Weekday / Weekend
+
+```{r}
+# Single Person Data
+sp_school <- merge_se_select %>%
+  filter(ID == "1047") %>%
+  ggplot(
+    aes(x = week_num, y = bedtime_mean_school_night)) +
+    geom_errorbar(
+      aes(
+        ymin = bedtime_mean_school_night - bedtime_sd_school_night,
+        ymax = bedtime_mean_school_night + bedtime_sd_school_night), width=.5, colour = "#F5B041") +
+    geom_line(colour = "#F5B041") +
+    geom_point(colour = "#F5B041") +
+  labs(
+    x = "Week Number",
+    y = "Bedtime on School Nights"
+  ) +
+  theme_classic() +
+  theme(axis.title.x = element_text(face = "bold", size = 16), axis.title.y = element_text(face = "bold", size = 16), axis.text = element_text(size = 16))
+
+sp_free <- merge_se_select %>%
+  filter(ID == "1047") %>%
+  ggplot(
+    aes(x = week_num, y = bedtime_mean_free_night)) +
+   geom_errorbar(
+      aes(
+        ymin = bedtime_mean_free_night - bedtime_sd_free_night,
+        ymax = bedtime_mean_free_night + bedtime_sd_free_night), width=.5, colour = "#BABDE1") +
+    geom_line(colour = "#BABDE1") +
+    geom_point(colour = "#BABDE1") +
+  labs(
+    x = "Week Number",
+    y = "Bedtime on Free Nights"
+  ) +
+  theme_classic() +
+  theme(axis.title.x = element_text(face = "bold", size = 16), axis.title.y = element_text(face = "bold", size = 16), axis.text = element_text(size = 16))
+
+single_plot <- 
+  cowplot::plot_grid(sp_school, sp_free, labels = c('A', 'B'))
+cowplot::save_plot(single_plot, base_height = 6, base_width = 13, filename = 'Supp_Figure2_singleplot.jpeg')
+
+
+mean_tib_wkend <- mean(merge_se_select$timeinbed_mean_free_night, na.rm = TRUE)
+mean_tib_wkend_label <- as.character(round(mean_tib_wkend, 1))
+mean_tib_wkend_label_hrs <- as.character(round(mean_tib_wkend/60, 1))
+tib_mean_wkend <-
+  merge_se_select %>%
+  ggplot(
+    aes(x = timeinbed_mean_free_night)
+  ) +
+  geom_histogram(fill = "#F17E0B") +
+  geom_vline(xintercept = mean_tib_wkend) +
+  annotate(
+    "text", label = paste(mean_tib_wkend_label, "minutes"), x =600, y = 100, size = 4) +
+  annotate(
+    "text", label = paste(mean_tib_wkend_label_hrs, "hours"), x = 600, y = 90
+  ) +
+  labs(
+    x = "Average Weekend Sleep Duration"
+  ) +
+  theme_classic()
+
+
+mean_tib_wkday <- mean(merge_se_select$timeinbed_mean_school_night, na.rm = TRUE)
+mean_tib_wkday_label <- as.character(round(mean_tib_wkday, 1))
+mean_tib_wkday_label_hrs <- as.character(round(mean_tib_wkday/60, 1))
+tib_mean_wkday <-
+  merge_se_select %>%
+  ggplot(
+    aes(x = timeinbed_mean_school_night)
+  ) +
+  geom_histogram(fill = "#F5B7B1") +
+  geom_vline(xintercept = mean_tib_wkday) +
+  annotate(
+    "text", label = paste(mean_tib_wkday_label, "minutes"), x =600, y = 100, size = 4) +
+  annotate(
+    "text", label = paste(mean_tib_wkday_label_hrs, "hours"), x = 600, y = 90
+  ) +
+  labs(
+    x = "Average Weekday Sleep Duration"
+  ) +
+  theme_classic()
+
+
+sd_tib_wkend <- mean(merge_se_select$timeinbed_sd_free_night, na.rm = TRUE)
+sd_tib_wkend_label <- as.character(round(sd_tib_wkend, 1))
+sd_tib_wkend_label_hrs <- as.character(round(sd_tib_wkend/60, 1))
+tib_sd_wkend <-
+  merge_se_select %>%
+  ggplot(
+    aes(x = timeinbed_sd_free_night)
+  ) +
+  geom_histogram(fill = "#999999") +
+  geom_vline(xintercept = sd_tib_wkend) +
+  annotate(
+    "text", label = paste(sd_tib_wkend_label, "minutes"), x =200, y = 100, size = 4) +
+  annotate(
+    "text", label = paste(sd_tib_wkend_label_hrs, "hours"), x = 200, y = 90
+  ) +
+  labs(
+    x = "Variability of Weekend Sleep Duration"
+  ) +
+  theme_classic()
+
+
+sd_tib_wkday <- mean(merge_se_select$timeinbed_sd_school_night, na.rm = TRUE)
+sd_tib_wkday_label <- as.character(round(sd_tib_wkday, 1))
+sd_tib_wkday_label_hrs <- as.character(round(sd_tib_wkday/60, 1))
+tib_sd_wkday <-
+  merge_se_select %>%
+  ggplot(
+    aes(x = timeinbed_sd_school_night)
+  ) +
+  geom_histogram(fill = "#BABDE1") +
+  geom_vline(xintercept = sd_tib_wkday) +
+  annotate(
+    "text", label = paste(sd_tib_wkday_label, "minutes"), x =200, y = 100, size = 4) +
+  annotate(
+    "text", label = paste(sd_tib_wkday_label_hrs, "hours"), x = 200, y = 90
+  ) +
+  labs(
+    x = "Variability of Weekday Sleep Duration"
+  ) +
+  theme_classic()
+
+
+mean_bt_wkend <- mean(merge_se_select$bedtime_mean_free_night, na.rm = TRUE)
+mean_bt_wkend_label <- as.character(round(mean_bt_wkend, 1))
+mean_bt_wkend_label_hrs <- as.character(round(mean_bt_wkend/60, 1))
+bt_mean_wkend <-
+  merge_se_select %>%
+  ggplot(
+    aes(x = bedtime_mean_free_night)
+  ) +
+  geom_histogram(fill = "#F5B041") +
+  geom_vline(xintercept = mean_bt_wkend) +
+  annotate(
+    "text", label = paste(mean_bt_wkend_label, "minutes"), x = 200, y = 100, size = 4) +
+  annotate(
+    "text", label = paste(mean_bt_wkend_label_hrs, "hours"), x = 200, y = 90
+  ) +
+  labs(
+    x = "Average Weekend Bedtime"
+  ) +
+  theme_classic()
+
+
+mean_bt_wkday <- mean(merge_se_select$bedtime_mean_school_night, na.rm = TRUE)
+mean_bt_wkday_label <- as.character(round(mean_bt_wkday, 1))
+mean_bt_wkday_label_hrs <- as.character(round(mean_bt_wkday/60, 1))
+bt_mean_wkday <-
+  merge_se_select %>%
+  ggplot(
+    aes(x = bedtime_mean_school_night)
+  ) +
+  geom_histogram(fill = "#CFE4EF") +
+  geom_vline(xintercept = mean_bt_wkday) +
+  annotate(
+    "text", label = paste(mean_bt_wkday_label, "minutes"), x =200, y = 100, size = 4) +
+  annotate(
+    "text", label = paste(mean_bt_wkday_label_hrs, "hours"), x = 200, y = 90
+  ) +
+  labs(
+    x = "Average Weekday Bedtime"
+  ) +
+  theme_classic()
+
+
+sd_bt_wkend <- mean(merge_se_select$bedtime_sd_free_night, na.rm = TRUE)
+sd_bt_wkend_label <- as.character(round(sd_bt_wkend, 1))
+sd_bt_wkend_label_hrs <- as.character(round(sd_bt_wkend/60, 1))
+bt_sd_wkend <-
+  merge_se_select %>%
+  ggplot(
+    aes(x = bedtime_sd_free_night)
+  ) +
+  geom_histogram(fill = "#B5EAF0") +
+  geom_vline(xintercept = sd_bt_wkend) +
+  annotate(
+    "text", label = paste(sd_bt_wkend_label, "minutes"), x =150, y = 100, size = 4) +
+  annotate(
+    "text", label = paste(sd_bt_wkend_label_hrs, "hours"), x = 150, y = 90
+  ) +
+  labs(
+    x = "Variability of Weekend Bedtime"
+  ) +
+  theme_classic()
+
+
+sd_bt_wkday <- mean(merge_se_select$bedtime_sd_school_night, na.rm = TRUE)
+sd_bt_wkday_label <- as.character(round(sd_bt_wkday, 1))
+sd_bt_wkday_label_hrs <- as.character(round(sd_bt_wkday/60, 1))
+bt_sd_wkday <-
+  merge_se_select %>%
+  ggplot(
+    aes(x = bedtime_sd_school_night)
+  ) +
+  geom_histogram(fill = "#CBD1D4") +
+  geom_vline(xintercept = sd_bt_wkday) +
+  annotate(
+    "text", label = paste(sd_bt_wkday_label, "minutes"), x =180, y = 100, size = 4) +
+  annotate(
+    "text", label = paste(sd_bt_wkday_label_hrs, "hours"), x = 180, y = 90
+  ) +
+  labs(
+    x = "Variability of Weekday Bedtime"
+  ) +
+  theme_classic()
+
+
+descriptives_sleep_w <- 
+  cowplot::plot_grid(tib_mean_wkend, tib_mean_wkday, tib_sd_wkend, tib_sd_wkday, bt_mean_wkend, bt_mean_wkday,  bt_sd_wkend, bt_sd_wkday, labels = c('A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'), ncol = 4)
+cowplot::save_plot(descriptives_sleep_w, base_height = 6, base_width = 13, filename = 'Supp_Figure3_descriptives.jpeg')
+```
+
+## Weekend / Weekday Differences (weekly level)
+
+```{r}
+merge_se_select_w <-
+  merge_se_select %>%
+  dplyr::select(
+    ID, SITE, sex, age, GROUP, event_cat1, MEQ_total_i, start_date_week_wednesday, week_num,  timeinbed_mean_school_night:bedtime_sd_free_night
+  ) %>%
+  pivot_longer(
+    cols = timeinbed_mean_school_night:timeinbed_mean_free_night,
+    names_to = "tib_mean",
+    values_to = "timeinbed_mean"
+  ) %>%
+  pivot_longer(
+    cols = timeinbed_sd_school_night:timeinbed_sd_free_night,
+    names_to = "tib_sd",
+    values_to = "timeinbed_sd"
+  ) %>%
+  dplyr::mutate(
+    drop_tib = 
+      ifelse(
+        (tib_mean == "timeinbed_mean_school_night" & tib_sd == "timeinbed_sd_free_night") |
+          (tib_mean == "timeinbed_mean_free_night" & tib_sd == "timeinbed_sd_school_night"),
+        "drop",
+        NA
+      )
+  ) %>%
+  filter(
+    is.na(drop_tib)
+  )   %>%
+  pivot_longer(
+    cols = bedtime_mean_school_night:bedtime_mean_free_night,
+    names_to = "bt_mean",
+    values_to = "bedtime_mean"
+  ) %>%
+  pivot_longer(
+    cols = bedtime_sd_school_night:bedtime_sd_free_night,
+    names_to = "bt_sd",
+    values_to = "bedtime_sd"
+  ) %>%
+  dplyr::mutate(
+    drop_bt = 
+      ifelse(
+        (bt_mean == "bedtime_mean_school_night" & bt_sd == "bedtime_sd_free_night") |
+          (bt_mean == "bedtime_mean_free_night" & bt_sd == "bedtime_sd_school_night"),
+        "drop",
+        NA
+      )
+  ) %>%
+  filter(
+    is.na(drop_bt)
+  )  %>%
+   dplyr::mutate(
+    drop = 
+      ifelse(
+        (tib_mean == "timeinbed_mean_school_night" & bt_mean == "bedtime_mean_free_night") |
+          (tib_mean == "timeinbed_mean_free_night" & bt_mean == "bedtime_mean_school_night"),
+        "drop",
+        NA
+      )
+  ) %>%
+  filter(
+    is.na(drop)
+  )  %>%
+  dplyr::select(-c(drop_tib, drop_bt, drop)) %>%
+  dplyr::mutate(
+    wknight =
+      ifelse(
+       str_detect(tib_mean, "school_night"), "school", "weekend"
+      )
+  ) %>%
+  dplyr::select(-c(tib_mean, tib_sd, bt_mean, bt_sd)) %>%
+  dplyr::mutate(
+    GROUP_re = 
+      ifelse(
+        GROUP == "Ideator" | GROUP == "Attempter", "STB", "CTL"
+      )
+  )
+
+summary(lmer(timeinbed_mean ~ wknight + (1 | ID), data = merge_se_select_w))
+# no difference in average time in bed on weekends and weekdays
+
+summary(lmer(timeinbed_sd ~ wknight  + (1 | ID), data = merge_se_select_w))
+# there is more variability of time in bed on weeknights (school nights) compared to weekends
+
+summary(lmer(bedtime_mean ~ wknight + (1 | ID), data = merge_se_select_w))
+# youth go to bed later on the weekends compared to weeknights
+
+summary(lmer(bedtime_sd ~ wknight + (1 | ID), data = merge_se_select_w))
+# there is more variability of bedtime on weeknights (school nights) compared to weekends
+
+# average tib
+avg_tib_diffs <-
+  merge_se_select_w %>%
+  # slice_sample(n=800, replace = TRUE) %>%  
+  ggplot(
+    aes(
+      x = week_num, y = timeinbed_mean, group = ID, color = wknight
+    )
+  ) +
+  geom_line(alpha = .5) +
+  geom_smooth(
+    method = "lm",
+    aes(x = week_num, y = timeinbed_mean, group = wknight, color = wknight)
+  ) +
+  scale_color_manual(values = c("#F5B041", "#BABDE1")) +
+  theme_classic() +
+  labs(
+    x = "Week",
+    y = "Average Sleep Duration",
+    color = "Weeknight"
+  )
+  
+# tib sd
+sd_tib_diffs <-
+  merge_se_select_w %>%
+  # slice_sample(n=800, replace = TRUE) %>%  
+  ggplot(
+    aes(
+      x = week_num, y = timeinbed_sd, group = ID, color = wknight
+    )
+  ) +
+  geom_line(alpha = .5) +
+  geom_smooth(
+    method = "lm",
+    aes(x = week_num, y = timeinbed_sd, group = wknight, color = wknight)
+  ) +
+  scale_color_manual(values = c("#F5B041", "#BABDE1")) +
+  theme_classic() +
+  labs(
+    x = "Week",
+    y = "Variability of Sleep Duration",
+    color = "Weeknight"
+  )
+
+# bedtime mean
+avg_bt_diffs <-
+  merge_se_select_w %>%
+  # slice_sample(n=800, replace = TRUE) %>%  
+  ggplot(
+    aes(
+      x = week_num, y = bedtime_mean, group = ID, color = wknight
+    )
+  ) +
+  geom_line(alpha = .5) +
+  geom_smooth(
+    method = "lm",
+    aes(x = week_num, y = bedtime_mean, group = wknight, color = wknight)
+  ) +
+  scale_color_manual(values = c("#F5B041", "#BABDE1")) +
+  theme_classic() +
+  labs(
+    x = "Week",
+    y = "Average Bedtime",
+    color = "Weeknight"
+  )
+
+# bedtime sd
+sd_bt_diffs <-
+  merge_se_select_w %>%
+  # slice_sample(n=800, replace = TRUE) %>%  
+  ggplot(
+    aes(
+      x = week_num, y = bedtime_sd, group = ID, color = wknight
+    )
+  ) +
+  geom_line(alpha=.5) +
+  geom_smooth(
+    method = "lm",
+    aes(x = week_num, y = bedtime_sd, group = wknight, color = wknight)
+  ) +
+  scale_color_manual(values = c("#F5B041", "#BABDE1")) +
+  theme_classic() +
+  labs(
+    x = "Week",
+    y = "Variability of Bedtime",
+    color = "Weeknight"
+  )
+descriptives_sleep_diffs <- 
+  cowplot::plot_grid(avg_tib_diffs, sd_tib_diffs, avg_bt_diffs, sd_bt_diffs, labels = c('A', 'B', 'C', 'D'), ncol = 2)
+cowplot::save_plot(descriptives_sleep_diffs, base_height = 6, base_width = 10, filename = 'Supp_Figure4_descriptives.jpeg')
+```
+
+## Weekend / Weekday Differences (daily level)
+
+```{r}
+daily_sleep_single <-
+  daily_sleep %>%
+  dplyr::group_by(ID) %>% 
+  dplyr::mutate(
+    dayX = wday(dt_feature, week_start = getOption("lubridate.week.start", 3))
+  ) %>%
+  dplyr::select(ID, dt_feature, wday_name, dayX, everything()) %>%
+  dplyr::mutate(
+    dt_feature = as.Date(dt_feature),
+    start_date = 
+      floor_date(dt_feature, unit = "week", week_start = getOption("lubridate.week.start", 3)),
+    end_date = start_date + 7
+  ) %>%
+  dplyr::select(ID, dt_feature, wday_name, dayX, start_date, everything()) %>%
+  distinct() %>%
+  dplyr::group_by(ID) %>%
+  dplyr::mutate(
+    week_num_sleep_lead = as.numeric(dt_feature - min(start_date))%/%7,
+    week_num_sleep_lag = as.numeric(dt_feature - min(end_date))%/%7
+  ) %>%
+  dplyr::select(ID, dt_feature, wday_name, dayX, start_date, end_date, week_num_sleep_lead, week_num_sleep_lag, everything()) %>%
+  arrange(ID, dt_feature) %>%
+  dplyr::mutate(
+    n_total_daily_motion_obs = n()
+  ) %>%
+  ungroup() %>%
+  group_by(ID, week_num_sleep_lead) %>%
+  dplyr::mutate(
+    n_total_motion_this_week = n()
+  ) %>%
+  ungroup() %>%
+  group_by(ID) %>%
+  dplyr::mutate(
+    week_num_sleep_lag = factor(week_num_sleep_lag),
+    week_num_sleep_lead = factor(week_num_sleep_lead),
+    num_wks_with_motion = length(unique(week_num_sleep_lead))
+  ) %>%
+  ungroup()  # 150 pts with 15600 obs
+    
+
+weekly_sleep_filtered_sum <-
+  daily_sleep_single %>%
+  filter(
+    n_total_motion_this_week > 1
+  ) %>%
+  group_by(ID) %>%
+  dplyr::summarise(
+    num_wks_with_more_than_1_obs_motion = length(unique(week_num_sleep_lead))
+  )
+
+daily_sleep_single <-
+  left_join(daily_sleep_single, weekly_sleep_filtered_sum, by = c("ID")) %>%
+  filter(
+    n_total_motion_this_week > 1
+    )  %>%
+  dplyr::mutate(
+    wday_name = lubridate::wday(dt_feature, label = TRUE),
+    night_type = 
+      ifelse(
+        wday_name == "Fri" | wday_name == "Sat", "free_night", "school_night"
+        )
+    )
+
+daily_sleep_single_w1 <-
+  daily_sleep_single %>%
+  filter(
+    ID == "1047"
+  ) %>%
+  filter(
+    start_date == "2020-11-04"
+  )
+
+daily_sleep_single_w1 %>%
+  ggplot(
+    aes(
+      x = dt_feature, y = bedtime, colour = night_type
+    ) 
+  ) +
+  geom_point() +
+  geom_line() +
+  scale_x_date(date_breaks = "1 day") +
+  theme_classic() +
+  theme(axis.text.x=element_text(angle=60, hjust = 1)) +
+  labs(
+    x = "Day",
+    colour = "Weeknight"
+  )
+  
+daily_sleep_single_w2 <-
+  daily_sleep_single %>%
+  filter(
+    ID == "1047"
+  ) %>%
+  filter(
+    start_date == "2020-11-11"
+  )
+
+daily_sleep_single_w2 %>%
+  ggplot(
+    aes(
+      x = dt_feature, y = bedtime, colour = night_type
+    ) 
+  ) +
+  geom_point() +
+  geom_line() +
+  scale_x_date(date_breaks = "1 day") +
+  theme_classic() +
+  theme(axis.text.x=element_text(angle=60, hjust = 1)) +
+  labs(
+    x = "Day",
+    colour = "Weeknight"
+  )
+
+daily_sleep_single_w3 <-
+  daily_sleep_single %>%
+  filter(
+    ID == "1047"
+  ) %>%
+  filter(
+    start_date == "2020-11-18"
+  )
+
+daily_sleep_single_w3 <-
+  daily_sleep_single %>%
+  filter(
+    ID == "1047"
+  ) %>%
+  filter(
+    start_date == "2020-11-18"
+  )
+
+daily_sleep_single_w3 %>%
+  ggplot(
+    aes(
+      x = dt_feature, y = bedtime, colour = night_type
+    ) 
+  ) +
+  geom_point() +
+  geom_line() +
+  scale_x_date(date_breaks = "1 day") +
+  theme_classic() +
+  theme(axis.text.x=element_text(angle=60, hjust = 1)) +
+  labs(
+    x = "Day",
+    colour = "Weeknight"
+  )
+
+daily_sleep_single_w3 <-
+  daily_sleep_single %>%
+  filter(
+    ID == "1047"
+  ) %>%
+  filter(
+    start_date == "2020-11-18"
+  )
+
+
+daily_sleep_single_w <-
+  daily_sleep_single %>%
+  filter(
+    ID == "1047"
+  ) %>%
+  filter(
+    start_date == "2020-11-04" | start_date == "2020-11-11" | start_date == "2020-11-18"
+  )
+daily_sleep_single_w %>%
+  ggplot(
+    aes(
+      x = dt_feature, y = bedtime, colour = night_type
+    ) 
+  ) +
+  geom_point() +
+  geom_line() +
+  scale_x_date(date_breaks = "1 day") +
+  theme_classic() +
+  theme(axis.text.x=element_text(angle=60, hjust = 1)) +
+  labs(
+    x = "Day",
+    colour = "Weeknight"
+  )
+
+```
+
+
+```{r}
+# Save
+save(file = format(Sys.Date(), 'weekly_sleep_and_stb_and_sr_cleaned_%B%e%Y.Rda'), list=c("merge_se_select", "merge_se_select_desc", "merge_si_select_lag"))
+```
+
+
+# References
+
+::: {#refs custom-style="Bibliography"}
+:::

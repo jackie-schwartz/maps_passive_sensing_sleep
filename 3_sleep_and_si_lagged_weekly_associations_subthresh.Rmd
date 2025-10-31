@@ -1,0 +1,286 @@
+---
+title: "3_sleep_and_si_lagged_weekly_associations_subthresh"
+author: "Jackie Kirshenbaum"
+date: "`r format(Sys.Date(), '%B %e %Y')`"
+output:
+  html_document:
+    df_print: paged
+  toc: yes
+  toc_float: yes
+---
+
+This script examines lagged week-to-week associations between SI and sleep features (time-in-bed/dur, bedtime)
+
+# Libraries and Themes
+
+```{r}
+library(tidyverse)
+library(scipub)
+library(kableExtra)
+library(skimr)
+library(lmerTest)
+library(brms)
+library(naniar)
+library(sjPlot)
+library(broom)
+library(ggeffects)
+library(patchwork)
+library(jtools)
+library(performance)
+library(interactions)
+
+theme_set(theme_classic()); theme_update(panel.grid.minor = element_line(linetype = "solid",linewidth = .5),axis.title.x = element_text(face = "bold"),axis.title.y = element_text(face = "bold"))
+
+colorpalette <- c("#F17E0B", "#F5B7B1", "#999999","#BABDE1", "#F5B041", "#B5EAF0", "#CBD1D4",  "#CFE4EF") 
+```
+
+# Load data
+
+```{r}
+# weekly with suicide risk data
+load("/../../../../Jackie/sleep_and_suicide_2024-2025/weekly_sleep_and_stb_and_sr_cleaned_October 82025.Rda")
+```
+
+# Scaling variables
+
+```{r}
+#  person centering and group centering variables
+merge_si_select_lag_scaled <- 
+  merge_si_select_lag %>%
+  dplyr::ungroup() %>%
+  dplyr::group_by(ID) %>% # p-mean centering (creating within-person / idiographic variables)
+  dplyr::mutate(
+    # tib weekly
+    timeinbed_whole_week_mean_pmean = as.numeric(scale(timeinbed_whole_week_mean)), # person's mean duration that week relative to their mean duration on other weeks 
+    timeinbed_mean_school_night_pmean = as.numeric(scale(timeinbed_mean_school_night)),
+    timeinbed_mean_free_night_pmean = as.numeric(scale(timeinbed_mean_free_night)),
+    timeinbed_whole_week_sd_pmean = as.numeric(scale(timeinbed_whole_week_sd)),   # person's variability in duration that week relative to their mean variability in duration on other weeks    
+    timeinbed_sd_school_night_pmean = as.numeric(scale(timeinbed_sd_school_night)),      
+    timeinbed_sd_free_night_pmean = as.numeric(scale(timeinbed_sd_free_night)),
+    # bedtime weekly
+    bedtime_whole_week_mean_pmean = as.numeric(scale(bedtime_whole_week_mean)),  
+    bedtime_mean_school_night_pmean = as.numeric(scale(bedtime_mean_school_night)),
+    bedtime_mean_free_night_pmean = as.numeric(scale(bedtime_mean_free_night)),
+    bedtime_whole_week_sd_pmean = as.numeric(scale(bedtime_whole_week_sd)),
+    bedtime_sd_school_night_pmean = as.numeric(scale(bedtime_sd_school_night)),
+    bedtime_sd_free_night_pmean = as.numeric(scale(bedtime_sd_free_night)),
+    # weekly mood
+    mood_whole_week_mean_pmean = as.numeric(scale(mood_whole_week_mean)),
+    mood_R_whole_week_mean_pmean = as.numeric(scale(mood_R_whole_week_mean)),
+    mood_mean_free_night_pmean = as.numeric(scale(mood_mean_free_night)),
+    mood_R_mean_free_night_pmean = as.numeric(scale(mood_R_mean_free_night)),
+    mood_mean_school_night_pmean = as.numeric(scale(mood_mean_school_night)),
+    mood_R_mean_school_night_pmean = as.numeric(scale(mood_R_mean_school_night)),
+  ) %>%
+  dplyr::ungroup() %>% 
+  dplyr::mutate(
+    # sex
+    sex = factor(sex),
+    # age
+    age_z = as.numeric(scale(age)),
+    week_num_time_z_rescaled = as.numeric(scale(week_num)),
+    schoolclosure = factor(schoolclosure),
+    summer = factor(summer),
+    # SR variables
+    SSI5_i_z = as.numeric(scale(SSI5_i)),
+    MFQ_i_z = as.numeric(scale(MFQ_i)),
+    SCARED_i_z = as.numeric(scale(SCARED_i)),
+    SHAPS_i_z = as.numeric(scale(SHAPS_TOT_r_i)),
+    MEQ_total_i_z = as.numeric(scale(MEQ_total_i)),
+    psqitotal_z = as.numeric(scale(psqitotal)),
+    weekly_missingness_z = as.numeric(scale(missing_lead_weeks)),    
+    risk_SIsig4_future = as.factor(risk_SIsig4_future),
+    risk_SIsig3_future = as.factor(risk_SIsig3_future)
+  ) %>%
+  # dplyr::select(ID:event_bin, GROUP, everything())  %>%
+  dplyr::mutate(across(ends_with("pmean"), ~ifelse(is.nan(.), NA, .)))
+```
+
+__Q2:__ Which sleep parameters predict week-to-week suicidal ideation? (logistic regression with "4" as clinical significance)
+
+```{r}
+options(scipen = 999)
+```
+
+
+# Covariates?
+Testing potential covariates in relation to my DV
+```{r}
+# individual
+cov_age_sex <- glmer(risk_SIsig3_future ~ age_z + sex + (1 | ID), family=binomial,  na.action=na.omit, data = merge_si_select_lag_scaled) # age sig
+cov_sch_close <- glmer(risk_SIsig3_future ~ schoolclosure + (1 | ID), family=binomial,  na.action=na.omit, data = merge_si_select_lag_scaled) 
+cov_summ <- glmer(risk_SIsig3_future ~ summer + (1 | ID), family=binomial,  na.action=na.omit, data = merge_si_select_lag_scaled) 
+cov_week <- glmer(risk_SIsig3_future ~ week_num_time_z_rescaled + (1 | ID), family=binomial,  na.action=na.omit, data = merge_si_select_lag_scaled) 
+cov_phone <- glmer(risk_SIsig3_future ~ iPhone +  (1 | ID), family=binomial,  na.action=na.omit, data = merge_si_select_lag_scaled) 
+cov_ssi <- glmer(risk_SIsig3_future ~  SSI5_i_z + (1 | ID), family=binomial,  na.action=na.omit, data = merge_si_select_lag_scaled) # ssi sig
+cov_mfq <- glmer(risk_SIsig3_future ~ MFQ_i_z +  (1 | ID), family=binomial,  na.action=na.omit, data = merge_si_select_lag_scaled) # mfq sig
+cov_meq <- glmer(risk_SIsig3_future ~ MEQ_total_i_z +   (1 | ID), family=binomial,  na.action=na.omit, data = merge_si_select_lag_scaled) 
+cov_scared <- glmer(risk_SIsig3_future ~ SCARED_i_z + (1 | ID), family=binomial,  na.action=na.omit, data = merge_si_select_lag_scaled) 
+cov_shaps <- glmer(risk_SIsig3_future ~ SHAPS_i_z + (1 | ID), family=binomial,  na.action=na.omit, data = merge_si_select_lag_scaled) 
+cov_psqi <- glmer(risk_SIsig3_future ~ psqitotal_z + (1 | ID), family=binomial,  na.action=na.omit, data = merge_si_select_lag_scaled) 
+cov_mood <- glmer(risk_SIsig3_future ~ mood_whole_week_mean_pmean + (1 | ID), family=binomial,  na.action=na.omit, data = merge_si_select_lag_scaled)
+cov_mood_school <- glmer(risk_SIsig3_future ~ mood_mean_school_night_pmean + (1 | ID), family=binomial,  na.action=na.omit, data = merge_si_select_lag_scaled)
+cov_mood_free <- glmer(risk_SIsig3_future ~ mood_mean_free_night_pmean + (1 | ID), family=binomial,  na.action=na.omit, data = merge_si_select_lag_scaled)
+
+tab_model(cov_age_sex, cov_sch_close, cov_summ, cov_week, cov_phone, cov_ssi, cov_mfq, cov_meq, cov_scared, cov_shaps, cov_psqi, cov_mood, cov_mood_school, cov_mood_free)
+# unique variance?
+cov <- glmer(risk_SIsig3_future ~ age_z + sex + SSI5_i_z + MFQ_i_z + SHAPS_i_z + (1 | ID), family=binomial,  na.action=na.omit, data = merge_si_select_lag_scaled) 
+
+tab_model(cov, pred.labels = c("Intercept", "Age", "Sex", "Baseline SI", "Baseline Depression", "Baseline Anhedonia"))
+# only SSI is uniquely associated with clinically sig SI
+```
+
+##### Supplementary Analysis of Missingness #####
+
+```{r}
+missingness_m1 <- glmer(risk_SIsig3_future ~ weekly_missingness_z + (1 | ID), family=binomial,  na.action=na.omit, data = merge_si_select_lag_scaled)
+summary(missingness_m1)
+tab_model(missingness_m1, show.std = TRUE)
+```
+
+
+# Person-Centered Logistic Reg Whole Week Mean + SD
+
+```{r}
+#### TIB (whole week)
+
+log_tib_step1 <- glmer(risk_SIsig3_future ~ timeinbed_whole_week_sd_pmean + timeinbed_whole_week_mean_pmean  + SSI5_i_z + (1 | ID), family=binomial, data = merge_si_select_lag_scaled)
+summary(log_tib_step1)
+
+tab_model(log_tib_step1, show.std = TRUE, pred.labels = c("Intercept", "Weekly Sleep Duration SD (pmean)", "Weekly Sleep Duration Mean (pmean)", "Baseline SI"))
+
+#### BEDTIME (whole week)
+
+log_on_step1 <- glmer(risk_SIsig3_future ~ bedtime_whole_week_sd_pmean + bedtime_whole_week_mean_pmean + SSI5_i_z + (1 | ID), family=binomial, data = merge_si_select_lag_scaled)
+summary(log_on_step1)
+
+tab_model(log_on_step1, show.std = TRUE, pred.labels = c("Intercept", "Weekly Bedtime SD (pmean)", "Weekly Bedtime Mean (pmean)", "Baseline SI"))
+```
+
+
+###################### WEEKEND / WEEKDAY ############################
+
+## TIB Weekdays
+
+```{r}
+log_tib_step1_ww <- glmer(risk_SIsig3_future ~ timeinbed_mean_school_night_pmean + timeinbed_sd_school_night_pmean + SSI5_i_z  + (1 | ID), family=binomial(link = 'logit'), data = merge_si_select_lag_scaled)
+summary(log_tib_step1_ww) 
+
+tab_model(log_tib_step1_ww,  show.std = TRUE, pred.labels = c("Intercept", "Weekday Sleep Duration Mean (pmean)", "Weekday Sleep Duration SD (pmean)", "Baseline SI"))
+
+```
+
+## TIB Weekends
+
+```{r}
+log_tib_step1_wwend <- glmer(risk_SIsig3_future ~ timeinbed_mean_free_night_pmean + timeinbed_sd_free_night_pmean + SSI5_i_z + (1 | ID), family=binomial(link = 'logit'), data = merge_si_select_lag_scaled)
+summary(log_tib_step1_wwend) 
+
+tab_model(log_tib_step1_wwend, show.std = TRUE, pred.labels = c("Intercept", "Weekend Sleep Duration Mean (pmean)", "Weekend Sleep Duration SD (pmean)", "Baseline SI"))
+
+```
+
+## Bedtime Weekdays
+
+```{r}
+log_on_step1_ww <- glmer(risk_SIsig3_future ~ bedtime_mean_school_night_pmean + bedtime_sd_school_night_pmean + SSI5_i_z  + (1 | ID), family=binomial(link = 'logit'), data = merge_si_select_lag_scaled)
+summary(log_on_step1_ww) 
+
+tab_model(log_on_step1_ww, show.std = TRUE, pred.labels = c("Intercept", "Weekday Bedtime Mean (pmean)", "Weekday Bedtime SD (pmean)", "Baseline SI"))
+
+```
+
+## Bedtime Weekends
+
+```{r}
+log_on_step1_wwend <- glmer(risk_SIsig3_future ~ bedtime_mean_free_night_pmean + bedtime_sd_free_night_pmean + SSI5_i_z + (1 | ID), family=binomial(link = 'logit'), data = merge_si_select_lag_scaled)
+summary(log_on_step1_wwend) 
+
+tab_model(log_on_step1_wwend, show.std = TRUE, pred.labels = c("Intercept", "Weekend Bedtime Mean (pmean)", "Weekend Bedtime SD (pmean)", "Baseline SI"))
+
+# Visualizations
+## Variability of Bedtime on Weekends
+plot_model(log_on_step1_wwend, type = "pred", terms = "bedtime_sd_free_night_pmean", ci.lvl = 0.95, colors = "mediumpurple3", line.size = 2, title = "") + labs(x = "Variability of Bedtime on Weekends \n (within-participant mean-centered)", y = "Next-Week Clinically Significant SI") + theme_classic()
+ggsave("FigureX_lagged_weekend_bedtime_variability_and_subthreshSI.jpeg", width = 4.5, height = 4)
+
+plot_model(log_on_step1_wwend, type = "est", axis.title = "Odds Ratio", show.values = TRUE, show.p = TRUE, vline.color = 'black', colors = "hero") +
+  scale_y_log10(limits = c(0.25, 8)) +
+  theme_classic()
+ggsave("FigureX_lagged_weekend_bedtime_variability_and_subthreshSI_OR.jpeg", width = 4.5, height = 3.5)
+```
+
+# Overall Models
+
+```{r}
+tab_model(log_on_step1, log_on_step1_ww, log_on_step1_wwend, show.std = TRUE, pred.labels = c("Intercept", "Whole-Week Bedtime SD (pmean)", "Whole-Week Bedtime Mean (pmean)", "Baseline Suicidal Ideation Severity", "Weekday Bedtime Mean (pmean)", "Weekday Bedtime SD (pmean)", "Weekend Bedtime Mean (pmean)", "Weekend Bedtime SD (pmean)"))
+
+tab_model(log_tib_step1, log_tib_step1_ww, log_tib_step1_wwend, show.std = TRUE, pred.labels = c("Intercept", "Whole-Week Sleep Duration SD (pmean)", "Whole-Week Sleep Duration Mean (pmean)", "Baseline Suicidal Ideation Severity", "Weekday Sleep Duration Mean (pmean)", "Weekday Sleep Duration SD (pmean)", "Weekend Sleep Duration Mean (pmean)", "Weekend Sleep Duration SD (pmean)"))
+```
+
+Overall, results indicate that a greater bedtime inconsistency relative to one's typical bedtime variability on a given weekend is related to next-week SI.
+
+#### OR Plot
+```{r}
+# Option 1
+
+m1_or_si <- broom::tidy(log_on_step1, conf.int=TRUE, conf.level = 0.95, exponentiate=TRUE)  %>%
+  filter(term %in% c("bedtime_whole_week_mean_pmean", "bedtime_whole_week_sd_pmean")) %>%
+  dplyr::select(term, estimate, std.error, p.value, conf.low, conf.high) %>%
+  dplyr::mutate(., sig = ifelse((conf.low > 1 & conf.high > 1) |
+                                            (conf.low < 1 & conf.high < 1), '*', ''))
+
+m2_or_si <- broom::tidy(log_on_step1_ww, conf.int=TRUE, conf.level = 0.95, exponentiate=TRUE)  %>%
+  filter(term %in% c("bedtime_mean_school_night_pmean", "bedtime_sd_school_night_pmean")) %>%
+  dplyr::select(term, estimate, std.error, p.value, conf.low, conf.high) %>%
+  dplyr::mutate(., sig = ifelse((conf.low > 1 & conf.high > 1) |
+                                            (conf.low < 1 & conf.high < 1), '*', ''))
+
+m3_or_si <- broom::tidy(log_on_step1_wwend, conf.int=TRUE, conf.level = 0.95, exponentiate=TRUE)  %>%
+  filter(term %in% c("bedtime_mean_free_night_pmean", "bedtime_sd_free_night_pmean")) %>%
+  dplyr::select(term, estimate, std.error, p.value, conf.low, conf.high) %>%
+  dplyr::mutate(., sig = ifelse((conf.low > 1 & conf.high > 1) |
+                                            (conf.low < 1 & conf.high < 1), '*', ''))
+
+comb_models <- rbind(m1_or_si, m2_or_si, m3_or_si)
+
+or_si_plot <- 
+  comb_models %>%
+    dplyr::mutate(
+      term = dplyr::recode(
+        term, 
+        'bedtime_whole_week_mean_pmean' = 'Within-Person Average \n Bedtime \n during the Whole Week',
+        'bedtime_whole_week_sd_pmean' = 'Within-Person Variability \n of Bedtime \n during the Whole Week',    
+        'bedtime_mean_school_night_pmean' = 'Within-Person Average \n Bedtime \n  on Weekdays',
+        'bedtime_sd_school_night_pmean' = 'Within-Person Variability \n of Bedtime \n on Weekdays',
+        'bedtime_mean_free_night_pmean' = 'Within-Person Average \n Bedtime \n  on Weekends',
+        'bedtime_sd_free_night_pmean' = 'Within-Person Variability \n of Bedtime \n on Weekends'
+        )
+      ) %>%
+    ggplot(
+      data=., 
+      aes(x = term, y = estimate)
+      ) +
+  geom_errorbar(
+    aes(ymin = conf.low, ymax = conf.high),
+    lwd = .3, width = 0, position = position_dodge(0.6)
+    ) +
+  geom_point(position = position_dodge(0.6), aes(color = term), size = 3, show.legend = FALSE) +
+  labs(x = NULL, y = "Adjusted Odds Ratio", title = 'Within-Person Suicidal Ideation Models') +
+  geom_hline(yintercept = 1, lty = 2) +
+  geom_text(aes(label = sig, y = conf.high*1.02), size = 5) +
+  labs(color = NULL) +
+  scale_color_manual(values = colorpalette) +
+  theme(
+    strip.text.y = element_blank(),
+    axis.text.x = element_text(colour = "black"),
+    axis.text.y = element_text(colour = "black"),
+    legend.position = "none"
+    )  +
+  scale_y_log10() +
+  scale_y_continuous(limits = c(0.45, 2.95), breaks=seq(0.45, 2.95, .55)) +
+  coord_flip() +
+  theme_classic()
+or_si_plot
+ggsave("or_si_plot.jpeg", width = 5, height = 4)
+```
+

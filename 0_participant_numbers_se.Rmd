@@ -1,0 +1,138 @@
+---
+title: "0_participant_numbers_se"
+author: "Jackie Kirshenbaum"
+date: "`r format(Sys.Date(), '%B %e %Y')`"
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+  html_notebook:
+    toc: yes
+    toc_float: yes
+editor_options:
+  chunk_output_type: console
+---
+
+# Libraries
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(scipub)
+library(kableExtra)
+library(skimr)
+library(arsenal)
+library(scipub)
+
+theme_set(theme_bw()); theme_update(panel.grid.minor = element_line(linetype = "solid",linewidth = .5),axis.title.x = element_text(face = "bold"),axis.title.y = element_text(face = "bold"))
+
+colorpalette <- c("#F17E0B", "#F5B7B1", "#999999","#BABDE1", "#F5B041", "#B5EAF0", "#CBD1D4",  "#CFE4EF") 
+```
+
+# Load data
+
+```{r,include=TRUE}
+
+# suicide event data
+load("/../../../../../../suicide_events_2024-10-23.rda")
+
+# sleep data
+load("/../../../../../Sleep/sleepdata_April232025.Rda")
+
+# start and end dates from SR
+load("/../../../../../../../self_report_07_11_2024.Rda")
+# just selecting dates
+sr_dates <-
+  selfreport %>%
+  dplyr::select(
+    ID, starts_with("SelfReportDate")
+  ) %>%
+  dplyr::mutate(
+    start_date = SelfReportDate_0,
+    end_date = 
+      case_when(
+        is.na(SelfReportDate_1) & is.na(SelfReportDate_3) & is.na(SelfReportDate_6) ~ SelfReportDate_0,
+        !is.na(SelfReportDate_1) & is.na(SelfReportDate_3) & is.na(SelfReportDate_6) ~ SelfReportDate_1,
+        !is.na(SelfReportDate_3) & is.na(SelfReportDate_6) ~ SelfReportDate_3,
+        !is.na(SelfReportDate_6) ~ SelfReportDate_6
+      )
+  )
+```
+
+# Wrangling to align dfs
+
+```{r}
+suicide_events_clean_weekly <-
+  suicide_events_clean_weekly %>%
+  rename(
+    ID = ptid
+  )
+
+weekly_sleep_se <-
+  weekly_sleep_comb %>%
+  rename(
+    start_date_week_wednesday = end_date # the end of the sleep week should align with the start of the SE week
+  )
+
+```
+
+# Joining dfs
+
+```{r}
+weekly_with_stb <-
+  left_join(weekly_sleep_se, suicide_events_clean_weekly, by = c('ID', 'start_date_week_wednesday')) %>%
+  mutate(event_cat1 = ifelse(!is.na(events), 1, 0)) %>%
+  dplyr::rename(
+    week_num = week_num_sleep_lead
+    ) %>% # weeks since start of participation for each participant
+  dplyr::mutate(
+    event_cat1_2wk = lead(event_cat1, n = 1), # n = 1 bc the original event_cat1 is already time-locked to the week after the end of the sleep week    
+    week_num = as.numeric(as.character(week_num)),
+    week_num_time_z = as.numeric(scale(week_num, center = TRUE, scale = TRUE)),
+    schoolclosure = case_when(start_date_week_wednesday > "2020-03-15" & start_date_week_wednesday < "2021-03-22" ~ "1", TRUE ~ "0") 
+  ) 
+
+
+weekly_with_stb %>% 
+  dplyr::group_by(ID) %>%
+  dplyr::summarise(
+    n = n()
+  )
+
+num_events <-
+  weekly_with_stb %>%
+  dplyr::filter(!is.na(events)) %>%
+  dplyr::select(start_date_week_wednesday, ID) %>% 
+  distinct() # 18 events
+
+length(unique(num_events$ID)) # 11 pts
+
+events_type <-
+  weekly_with_stb %>%
+  dplyr::filter(!is.na(events)) %>%
+  dplyr::select(start_date_week_wednesday, ID, events) %>%
+  dplyr::mutate(
+    aborted = ifelse(grepl('aborted', events), 1, 0),
+    aborted = ifelse(grepl('aborted, attempt', events), 1, aborted),
+    attempt = ifelse(grepl('attempt', events) & aborted == 0, 1, 0),
+    hospitalization = ifelse(grepl('hospitalization', events), 1, 0),
+    interrupted = ifelse(grepl('interrupted', events), 1, 0),
+    er = ifelse(grepl('ER', events), 1, 0)
+    )
+
+sum_tbl <-
+  events_type %>% 
+  pivot_longer(c(aborted, attempt, hospitalization, er, interrupted)) %>%
+  dplyr::group_by(name) %>%
+  summarise(count = sum(value))
+
+sum_tbl
+```
+
+
+```{r}
+save(file = format(Sys.Date(), 'weekly_sleep_se_cleaned_%B%e%Y.Rda'), list=c("weekly_with_stb"))
+```
+
+
+

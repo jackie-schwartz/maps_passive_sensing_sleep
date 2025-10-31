@@ -1,0 +1,763 @@
+---
+title: "2_sleep_and_se_associations"
+author: "Jackie Kirshenbaum"
+date: "`r format(Sys.Date(), '%B %e %Y')`"
+output:
+  html_document:
+    df_print: paged
+  toc: yes
+  toc_float: yes
+---
+
+# Libraries and Themes
+
+```{r}
+library(tidyverse)
+library(scipub)
+library(kableExtra)
+library(skimr)
+library(lmerTest)
+library(brms)
+library(naniar)
+library(sjPlot)
+library(broom)
+library(ggeffects)
+library(patchwork)
+library(jtools)
+library(interactions)
+library(broom)
+library(broom.mixed)
+library(tidymodels)
+library(dotwhisker)
+
+
+colorpalette <- c("#F17E0B", "#F5B7B1", "#999999","#BABDE1", "#F5B041", "#B5EAF0", "#CBD1D4",  "#CFE4EF") 
+```
+
+# Load data
+
+```{r}
+# weekly with suicide event data
+load("/../../../../Jackie/sleep_and_suicide_2024-2025/weekly_sleep_and_stb_and_sr_cleaned_October 82025.Rda")
+
+load("/../../../../../../../self_report_07_11_2024.Rda")
+
+load("/../../../../../../service_use.Rda")
+
+```
+
+# Did psychiatric medication change?
+
+```{r}
+#### Those with any psych med throughout the study ####
+psych_med_ids <-
+  su_long %>%
+  dplyr::group_by(ID) %>%
+  dplyr::mutate(
+    any_psych_med = 
+      ifelse(
+        curr == "1", "1", "0"
+    )
+  ) %>%
+  filter(any_psych_med == "1") %>%
+  distinct(ID) # 165 of 223 participants were on any psych med throughout the study (11%)
+
+#### Those with a change from med to non-med (or vice versa) ####
+psych_med_change_ids <-
+  su_long %>%
+  filter(changed == TRUE) %>%
+  distinct(ID) # psych med use changed for 35 out of 223 participants (11%)
+
+#### joining psych med use with main df (those with sleep data) ####
+merge_se_select <- 
+  merge(
+    merge_se_select, su, by = "ID"
+  ) %>%
+  dplyr::mutate(
+    psych_med_change = 
+      ifelse(
+        ID %in% psych_med_change_ids$ID, 1, 0
+      ),
+    any_psych_med = 
+      ifelse(
+        ID %in% psych_med_ids$ID, 1, 0
+      )
+  )
+
+psych_med_ids <-
+  merge_se_select %>%
+  filter(any_psych_med == 1) %>%
+  distinct(ID) # # For those who have sleep data, 115 our of 145 participants had any psych med use (80%)
+
+psych_med_change_ids <-
+  merge_se_select %>%
+  filter(psych_med_change == 1) %>%
+  distinct(ID) # For those who have sleep data, psych med use changed for 24 out of 145 participants (17%)
+```
+
+# Pulling out missigness variable from SI df
+
+```{r}
+weekly_si_missingness <-
+  merge_si_select_lag %>%
+  dplyr::select(ID, missing_lead_weeks) %>%
+  distinct()
+
+# joining with se df
+merge_se_select <- merge(merge_se_select, weekly_si_missingness, by = "ID")
+
+```
+
+# Scaling variables
+
+```{r}
+merge_se_select_scaled <- 
+  merge_se_select %>%
+  dplyr::ungroup() %>%
+  dplyr::group_by(ID) %>% # p-mean centering (creating within-person / idiographic variables)
+  dplyr::mutate(
+    # tib weekly
+    timeinbed_whole_week_mean_pmean = as.numeric(scale(timeinbed_whole_week_mean)), # person's mean duration that week relative to their mean duration on other weeks 
+    timeinbed_whole_week_mean_pmean_hrs = as.numeric(scale(timeinbed_whole_week_mean/60, scale = FALSE)),
+    timeinbed_mean_school_night_pmean = as.numeric(scale(timeinbed_mean_school_night)),
+    timeinbed_mean_school_night_pmean_hrs = as.numeric(scale(timeinbed_mean_school_night/60, scale = FALSE)),    
+    timeinbed_mean_free_night_pmean = as.numeric(scale(timeinbed_mean_free_night)),
+    timeinbed_mean_free_night_pmean_hrs = as.numeric(scale(timeinbed_mean_free_night/60, scale = FALSE)),    
+    timeinbed_whole_week_sd_pmean = as.numeric(scale(timeinbed_whole_week_sd)),   # person's variability in duration that week relative to their mean variability in duration on other weeks
+    timeinbed_whole_week_sd_pmean_hrs = as.numeric(scale(timeinbed_whole_week_sd/60, scale = FALSE)), 
+    timeinbed_sd_school_night_pmean = as.numeric(scale(timeinbed_sd_school_night)),
+    timeinbed_sd_school_night_pmean_hrs = as.numeric(scale(timeinbed_sd_school_night/60, scale = FALSE)),    
+    timeinbed_sd_free_night_pmean = as.numeric(scale(timeinbed_sd_free_night)),
+    timeinbed_sd_free_night_pmean_hrs = as.numeric(scale(timeinbed_sd_free_night/60, scale = FALSE)),    
+    # bedtime weekly
+    bedtime_whole_week_mean_pmean = as.numeric(scale(bedtime_whole_week_mean)),  
+    bedtime_mean_school_night_pmean = as.numeric(scale(bedtime_mean_school_night)),
+    bedtime_mean_free_night_pmean = as.numeric(scale(bedtime_mean_free_night)),
+    bedtime_whole_week_sd_pmean = as.numeric(scale(bedtime_whole_week_sd)),
+    bedtime_sd_school_night_pmean = as.numeric(scale(bedtime_sd_school_night)),
+    bedtime_sd_free_night_pmean = as.numeric(scale(bedtime_sd_free_night)),
+    # mood weekly
+    mood_whole_week_mean_pmean = as.numeric(scale(mood_whole_week_mean)),  
+    mood_mean_school_night_pmean = as.numeric(scale(mood_mean_school_night)),
+    mood_mean_free_night_pmean = as.numeric(scale(mood_mean_free_night))
+  ) %>%
+  dplyr::ungroup() %>% 
+  dplyr::mutate(
+    # sex
+    sex = factor(sex),
+    # age
+    age_z = as.numeric(scale(age)),
+    week_num_time_z_rescaled = as.numeric(scale(week_num)),
+    schoolclosure = factor(schoolclosure),
+    summer = factor(summer),
+    psych_med_change = factor(psych_med_change),
+    any_psych_med = factor(any_psych_med),
+    # SR variables
+    SSI5_i_z = as.numeric(scale(SSI5_i)),
+    MFQ_i_z = as.numeric(scale(MFQ_i)),
+    SCARED_i_z = as.numeric(scale(SCARED_i)),
+    SHAPS_i_z = as.numeric(scale(SHAPS_TOT_r_i)),
+    MEQ_total_i_z = as.numeric(scale(MEQ_total_i)),
+    psqitotal_z = as.numeric(scale(psqitotal)),
+    weekly_missingness_z = as.numeric(scale(missing_lead_weeks))
+  ) %>%
+  dplyr::mutate(across(ends_with("z"), ~ifelse(is.nan(.), NA, .)))
+```
+
+# Covariates?
+
+```{r}
+cov_age_sex <- glmer(event_cat1 ~ age_z + sex + (1 | ID), family=binomial,  na.action=na.omit, data = merge_se_select_scaled)
+cov_sch_close <- glmer(event_cat1 ~ schoolclosure + (1 | ID), family=binomial,  na.action=na.omit, data = merge_se_select_scaled) 
+cov_summ <- glmer(event_cat1 ~ summer + (1 | ID), family=binomial,  na.action=na.omit, data = merge_se_select_scaled)
+cov_week <- glmer(event_cat1 ~ week_num_time_z_rescaled + (1 | ID), family=binomial,  na.action=na.omit, data = merge_se_select_scaled) 
+cov_phone <- glmer(event_cat1 ~ iPhone +  (1 | ID), family=binomial,  na.action=na.omit, data = merge_se_select_scaled)
+cov_ssi <- glmer(event_cat1 ~  SSI5_i_z + (1 | ID), family=binomial,  na.action=na.omit, data = merge_se_select_scaled)
+cov_mfq <- glmer(event_cat1 ~ MFQ_i_z +  (1 | ID), family=binomial,  na.action=na.omit, data = merge_se_select_scaled)
+cov_meq <- glmer(event_cat1 ~ MEQ_total_i_z +   (1 | ID), family=binomial,  na.action=na.omit, data = merge_se_select_scaled)
+cov_scared <- glmer(event_cat1 ~ SCARED_i_z + (1 | ID), family=binomial,  na.action=na.omit, data = merge_se_select_scaled)
+cov_shaps <- glmer(event_cat1 ~ SHAPS_i_z + (1 | ID), family=binomial,  na.action=na.omit, data = merge_se_select_scaled)
+cov_psqi <- glmer(event_cat1 ~ psqitotal_z + (1 | ID), family=binomial,  na.action=na.omit, data = merge_se_select_scaled)
+cov_mood <- glmer(event_cat1 ~ mood_whole_week_mean_pmean + (1 | ID), family=binomial,  na.action=na.omit, data = merge_se_select_scaled)
+cov_mood_school <- glmer(event_cat1 ~ mood_mean_school_night_pmean + (1 | ID), family=binomial,  na.action=na.omit, data = merge_se_select_scaled)
+cov_mood_free <- glmer(event_cat1 ~ mood_mean_free_night_pmean + (1 | ID), family=binomial,  na.action=na.omit, data = merge_se_select_scaled)
+
+tab_model(cov_age_sex, cov_sch_close, cov_summ, cov_week, cov_phone, cov_ssi, cov_mfq, cov_meq, cov_scared, cov_shaps, cov_psqi, cov_mood, cov_mood_school, cov_mood_free)
+# week number is the only covariate associated with SE
+
+# Looking at psych meds within those who had SE
+se_only <- 
+  merge_se_select_scaled %>% 
+  dplyr::select(ID, SelfReportDate_1:start_date_week_wednesday, study_start_date, sleep_feature_month, psych_med_change, any_psych_med, event_cat1) %>%
+  filter(event_cat1 == 1) %>% 
+  dplyr::select(
+    ID, psych_med_change:event_cat1
+  ) %>%
+  distinct(ID, .keep_all = TRUE)
+```
+
+
+##### Supplementary CR Analysis of Missingness #####
+
+```{r}
+merge_se_select_scaled_cr <-
+  merge_se_select_scaled %>%
+  dplyr::group_by(ID) %>%
+  dplyr::mutate(
+    anySE = 
+      ifelse(event_cat1 == 1, "1", "0"),
+    anySE = as.factor(anySE)
+  ) %>%
+  dplyr::select(
+    ID, weekly_missingness_z, missing_lead_weeks, anySE, SSI5_i_z, SHAPS_i_z, MFQ_i_z
+  ) %>%
+  distinct()
+
+t.test(missing_lead_weeks ~ anySE, data = merge_se_select_scaled_cr)
+
+missingness_m1 <- glmer(event_cat1 ~ weekly_missingness_z + (1 | ID), family=binomial,  na.action=na.omit, data = merge_se_select_scaled)
+summary(missingness_m1)
+tab_model(missingness_m1, show.std = TRUE)
+
+missingness_m2 <- lm(weekly_missingness_z  ~ SSI5_i_z, na.action=na.omit, data = merge_se_select_scaled_cr)
+summary(missingness_m2)
+tab_model(missingness_m2, show.std = TRUE)
+
+missingness_m3 <- lm(weekly_missingness_z  ~ SHAPS_i_z, na.action=na.omit, data = merge_se_select_scaled_cr)
+summary(missingness_m3)
+tab_model(missingness_m3, show.std = TRUE)
+
+missingness_m4 <- lm(weekly_missingness_z  ~ MFQ_i_z, na.action=na.omit, data = merge_se_select_scaled_cr)
+summary(missingness_m4)
+tab_model(missingness_m4, show.std = TRUE)
+```
+
+
+# Person-Centered Logistic Reg Whole Week Mean + SD
+
+```{r}
+#### TIB (whole week)
+log_tib_step1 <- glmer(event_cat1 ~ timeinbed_whole_week_sd_pmean + timeinbed_whole_week_mean_pmean  +  week_num_time_z_rescaled + (1 | ID), family=binomial(link = 'logit'), data = merge_se_select_scaled)
+summary(log_tib_step1) # sig main effect of TIB
+
+tab_model(log_tib_step1, show.std = TRUE, pred.labels = c("Intercept", "Weekly TIB SD (pmean)", "Weekly TIB Mean (pmean)", "Weeks Since Baseline"))
+
+
+#### Supplementary analysis looking at a 2-week lag sleep -> SE ####
+log_tib_step1_supp <- glmer(event_cat1_2wk ~ timeinbed_whole_week_sd_pmean + timeinbed_whole_week_mean_pmean  +  week_num_time_z_rescaled + (1 | ID), family=binomial(link = 'logit'), data = merge_se_select_scaled)
+summary(log_tib_step1_supp)
+tab_model(log_tib_step1_supp, show.std = TRUE, pred.labels = c("Intercept", "Weekly TIB SD (pmean)", "Weekly TIB Mean (pmean)", "Weeks Since Baseline"))
+
+
+#### BEDTIME (whole week)
+log_on_step1 <- glmer(event_cat1 ~ bedtime_whole_week_sd_pmean + bedtime_whole_week_mean_pmean +  week_num_time_z_rescaled + (1 | ID), family=binomial(link = 'logit'),  data = merge_se_select_scaled)
+summary(log_on_step1) 
+
+tab_model(log_on_step1, show.std = TRUE, pred.labels = c("Intercept", "Weekly Bedtime SD (pmean)", "Weekly Bedtime Mean (pmean)", "Weeks Since Baseline"))
+```
+
+
+###################### WEEKEND / WEEKDAY ############################
+
+## TIB Weekdays
+
+```{r}
+log_tib_step1_ww <- glmer(event_cat1 ~ timeinbed_mean_school_night_pmean + timeinbed_sd_school_night_pmean + week_num_time_z_rescaled + (1 | ID), family=binomial(link = 'logit'), data = merge_se_select_scaled)
+summary(log_tib_step1_ww) # sig main effect of TIB
+
+tab_model(log_tib_step1_ww, show.std = TRUE, pred.labels = c("Intercept", "Weekday Sleep Duration Mean (pmean)", "Weekday Sleep Duration SD (pmean)", "Weeks Since Baseline"))
+
+#### Centered/Unscaled ####
+log_tib_step1_ww_unsc <- glmer(event_cat1 ~ timeinbed_mean_school_night_pmean_hrs + timeinbed_sd_school_night_pmean_hrs + week_num_time_z_rescaled + (1 | ID), family=binomial(link = 'logit'), data = merge_se_select_scaled)
+summary(log_tib_step1_ww_unsc) 
+
+tab_model(log_tib_step1_ww_unsc, show.std = TRUE, pred.labels = c("Intercept", "Weekday Sleep Duration Mean (pmean)", "Weekday Sleep Duration SD (pmean)", "Weeks Since Baseline"))
+# For every hour increase in average sleep duration on weekdays, there is a near two-fold increase in the likelihood of a suicide event the next week
+```
+
+#### TIB plot
+
+```{r}
+plot_model(log_tib_step1, type = "est", axis.title = "Odds Ratio", show.values = TRUE, show.p = TRUE) +
+  scale_y_log10(limits = c(0.25, 5))
+plot_model(log_tib_step1_ww, type = "est", axis.title = "Odds Ratio", show.values = TRUE, show.p = TRUE, vline.color = 'black', colors = "hero") +
+  scale_y_log10(limits = c(0.25, 8)) +
+  theme_classic()
+ggsave("FigureX_tib_weekday_mean_and_SE_OR.jpeg", width = 4.5, height = 3)
+```
+
+## TIB Weekends
+
+```{r}
+log_tib_step1_wwend <- glmer(event_cat1 ~ timeinbed_mean_free_night_pmean + timeinbed_sd_free_night_pmean + week_num_time_z_rescaled + (1 | ID), family=binomial(link = 'logit'), data = merge_se_select_scaled)
+summary(log_tib_step1_wwend) 
+
+tab_model(log_tib_step1_wwend,  show.std = TRUE, pred.labels = c("Intercept", "Weekend Sleep Duration Mean (pmean)", "Weekend Sleep Duration SD (pmean)", "Weeks Since Baseline"))
+```
+
+## Bedtime Weekdays
+
+```{r}
+log_on_step1_ww <- glmer(event_cat1 ~ bedtime_mean_school_night_pmean + bedtime_sd_school_night_pmean + week_num_time_z_rescaled + (1 | ID), family=binomial(link = 'logit'), data = merge_se_select_scaled)
+summary(log_on_step1_ww) 
+
+tab_model(log_on_step1_ww,  show.std = TRUE, pred.labels = c("Intercept", "Weekday Bedtime Mean (pmean)", "Weekday Bedtime SD (pmean)", "Weeks Since Baseline"))
+```
+
+## Bedtime Weekends
+
+```{r}
+log_on_step1_wwend <- glmer(event_cat1 ~ bedtime_mean_free_night_pmean + bedtime_sd_free_night_pmean + week_num_time_z_rescaled + (1 | ID), family=binomial(link = 'logit'), data = merge_se_select_scaled)
+summary(log_on_step1_wwend) 
+
+tab_model(log_on_step1_wwend, show.std = TRUE, pred.labels = c("Intercept", "Weekend Bedtime Mean (pmean)", "Weekend Bedtime SD (pmean)", "Weeks Since Baseline"))
+```
+
+# Overall Models
+
+```{r}
+tab_model(log_tib_step1, log_tib_step1_ww, log_tib_step1_wwend, show.std = TRUE, pred.labels = c("Intercept", "Whole-Week Sleep Duration SD (pmean)", "Whole-Week Sleep Duration Mean (pmean)", "Weeks Since Baseline", "Weekday Sleep Duration Mean (pmean)", "Weekday Sleep Duration SD (pmean)", "Weekend Sleep Duration Mean (pmean)", "Weekend Sleep Duration SD (pmean)"))
+
+tab_model(log_on_step1, log_on_step1_ww, log_on_step1_wwend, show.std = TRUE, pred.labels = c("Intercept", "Whole-Week Bedtime SD (pmean)", "Whole-Week Bedtime Mean (pmean)", "Weeks Since Baseline", "Weekday Bedtime Mean (pmean)", "Weekday Bedtime SD (pmean)", "Weekend Bedtime Mean (pmean)", "Weekend Bedtime SD (pmean)"))
+```
+
+Overall, results indicate that a greater time-in-bed relative to one's typical time-in-bed on a given a week is related to next week presence of a SE. This seems to be driven by time-in-bed during weekdays.
+
+#### OR Plot
+```{r}
+# Option 1
+
+m1_or_se <- broom::tidy(log_tib_step1, conf.int=TRUE, conf.level = 0.95, exponentiate=TRUE)  %>%
+  filter(term %in% c("timeinbed_whole_week_mean_pmean", "timeinbed_whole_week_sd_pmean")) %>%
+  dplyr::select(term, estimate, std.error, p.value, conf.low, conf.high) %>%
+  dplyr::mutate(., sig = ifelse((conf.low > 1 & conf.high > 1) |
+                                            (conf.low < 1 & conf.high < 1), '*', ''))
+
+m2_or_se <- broom::tidy(log_tib_step1_ww, conf.int=TRUE, conf.level = 0.95, exponentiate=TRUE)  %>%
+  filter(term %in% c("timeinbed_mean_school_night_pmean", "timeinbed_sd_school_night_pmean")) %>%
+  dplyr::select(term, estimate, std.error, p.value, conf.low, conf.high) %>%
+  dplyr::mutate(., sig = ifelse((conf.low > 1 & conf.high > 1) |
+                                            (conf.low < 1 & conf.high < 1), '*', ''))
+
+m3_or_se <- broom::tidy(log_tib_step1_wwend, conf.int=TRUE, conf.level = 0.95, exponentiate=TRUE)  %>%
+  filter(term %in% c("timeinbed_mean_free_night_pmean", "timeinbed_sd_free_night_pmean")) %>%
+  dplyr::select(term, estimate, std.error, p.value, conf.low, conf.high) %>%
+  dplyr::mutate(., sig = ifelse((conf.low > 1 & conf.high > 1) |
+                                            (conf.low < 1 & conf.high < 1), '*', ''))
+
+comb_models <- rbind(m1_or_se, m2_or_se, m3_or_se)
+
+or_se_plot <- 
+  comb_models %>%
+    dplyr::mutate(
+      term = dplyr::recode(
+        term, 
+        'timeinbed_whole_week_mean_pmean' = 'Within-Person Average \n Sleep Duration \n during the Whole Week',
+        'timeinbed_whole_week_sd_pmean' = 'Within-Person Variability \n of Sleep Duration \n during the Whole Week',    
+        'timeinbed_mean_school_night_pmean' = 'Within-Person Average \n Sleep Duration \n  on Weekdays',
+        'timeinbed_sd_school_night_pmean' = 'Within-Person Variability \n of Sleep Duration \n on Weekdays',
+        'timeinbed_mean_free_night_pmean' = 'Within-Person Average \n Sleep Duration \n  on Weekends',
+        'timeinbed_sd_free_night_pmean' = 'Within-Person Variability \n of Sleep Duration \n on Weekends'
+        )
+      ) %>%
+    ggplot(
+      data=., 
+      aes(x = term, y = estimate)
+      ) +
+  geom_errorbar(
+    aes(ymin = conf.low, ymax = conf.high),
+    lwd = .3, width = 0, position = position_dodge(0.6)
+    ) +
+  geom_point(position = position_dodge(0.6), aes(color = term), size = 3, show.legend = FALSE) +
+  labs(x = NULL, y = "Adjusted Odds Ratio", title = 'Within-Person Suicidal Event Models') +
+  geom_hline(yintercept = 1, lty = 2) +
+  geom_text(aes(label = sig, y = conf.high*1.02), size = 5) +
+  labs(color = NULL) +
+  scale_color_manual(values = colorpalette) +
+  theme(
+    strip.text.y = element_blank(),
+    axis.text.x = element_text(colour = "black"),
+    axis.text.y = element_text(colour = "black"),
+    legend.position = "none"
+    )  +
+  scale_y_log10() +
+  scale_y_continuous(limits = c(0.30, 5), breaks=seq(0.30,5,.70)) +
+  coord_flip() +
+  theme_classic()
+or_se_plot
+ggsave("or_se_plot.jpeg", width = 5, height = 4)
+```
+
+## Sensitivity Analyses
+
+### sensitivity: random removal of events for pt who had 6 events
+
+```{r}
+set.seed(123)
+sum_subjs <-
+  merge_se_select_scaled %>%
+  dplyr::select(
+    ID, age, sex, GROUP, week_num, event_cat1
+  ) %>%
+  dplyr::group_by(ID) %>%
+  dplyr::mutate(
+    sum_events = sum(event_cat1)
+  ) # 1082 random removal of 4 events
+
+
+merge_se_select_scaled_1082 <-
+  merge_se_select_scaled %>%
+  filter(ID == "1082" & event_cat1 == 1) %>%
+  slice_sample(n=2)
+
+merge_se_select_scaledx <-
+  merge_se_select_scaled %>%
+  filter(
+    ID != "1082"
+  )
+
+merge_se_select_scaledxx <- 
+  rbind(
+    merge_se_select_scaledx, merge_se_select_scaled_1082
+  )
+
+# random sample method
+log_tib_step1_ww_sens <- glmer(event_cat1 ~ timeinbed_mean_school_night_pmean + timeinbed_sd_school_night_pmean + week_num_time_z_rescaled + (1 | ID), family=binomial(link = 'logit'), data = merge_se_select_scaledxx)
+summary(log_tib_step1_ww_sens) 
+
+tab_model(log_tib_step1_ww_sens,  show.std = TRUE, pred.labels = c("Intercept", "Weekday Sleep Duration Mean (pmean)", "Weekday Sleep Duration SD (pmean)", "Weeks Since Baseline"))
+```
+
+### univariate analyses
+
+```{r}
+#### TIB (whole week)
+log_tib_step1_uni <- glmer(event_cat1 ~  timeinbed_whole_week_mean_pmean + (1 | ID), family=binomial(link = 'logit'), data = merge_se_select_scaled)
+summary(log_tib_step1_uni) # sig main effect of TIB
+tab_model(log_tib_step1_uni,  show.std = TRUE, pred.labels = c("Intercept", "Weekly Sleep Duration Mean (pmean)")) # OR = 1.80, CI 1.03-3.07, p=.039
+
+log_tib_step1_ww_uni <- glmer(event_cat1 ~ timeinbed_mean_school_night_pmean + (1 | ID), family=binomial(link = 'logit'), data = merge_se_select_scaled)
+summary(log_tib_step1_ww_uni) 
+tab_model(log_tib_step1_ww_uni,  show.std = TRUE, pred.labels = c("Intercept", "Weekday Sleep Duration Mean (pmean)")) # OR = 2.10, CI 1.16-3.65, p=.013
+```
+
+### bootstrapping a bayesian model on Raw Data
+
+```{r}
+# reduced dataframe
+merge_se_select_scaled_reduced <-
+  merge_se_select_scaled %>%
+  dplyr::select(
+    ID, start_date_week_wednesday, timeinbed_mean_school_night_pmean, timeinbed_sd_school_night_pmean, week_num_time_z_rescaled, event_cat1
+  )  %>%
+  dplyr::filter(!is.na(timeinbed_mean_school_night_pmean)) %>%
+  dplyr::filter(!is.na(timeinbed_sd_school_night_pmean)) %>%
+  dplyr::mutate(
+    event_cat1 = ifelse(event_cat1 == 1, "Event", "NonEvent"),
+    event_cat1 = as.factor(event_cat1),
+    event_num = ifelse(event_cat1 == "Event", 1, 0),
+    ID = as.factor(ID)
+    ) %>%
+  dplyr::select(-event_cat1, -start_date_week_wednesday)
+table(merge_se_select_scaled_reduced$event_num) # 18/2683 events
+```
+
+
+1) Repeats a bootstrap B (100) times. 2) Each iteration resamples participants with replacement. 3) Fits a Bayesian GLMM (brm()) to that resampled data. 4) Extracts model estimates and diagnostics. 5) Stores everything in a list.
+```{r}
+library(dplyr)
+library(brms)
+library(posterior)
+library(furrr)
+
+
+set.seed(123)
+
+# Number of bootstrap replicates
+B <- 100  
+
+ids <- unique(merge_se_select_scaled_reduced$ID)
+
+# Plan parallelization for efficiency
+plan(multisession, workers = 4)  # of CPU cores
+
+all_terms <- c("Intercept", 
+               "timeinbed_mean_school_night_pmean", 
+               "timeinbed_sd_school_night_pmean", 
+               "week_num_time_z_rescaled")
+
+priors <- c(
+  set_prior("normal(0,1)", class = "b"),
+  set_prior("student_t(3,0,2.5)", class = "sd"),
+  set_prior("student_t(3,0,2.5)", class = "Intercept")
+)
+
+boot_results <- future_map(1:B, function(bi) { # future_map loops over the sequence 1:B (will perform 100 bootstrap iterations) in parallel. The function(bi) argument is just an anonymous function (no name) that will tell us which bootstrap replicate we're on. For each bi (1:B), the function resamples IDs, fits the bayesian model, extracts diagnostics, and returns them. These results are collected into a list.
+  # 1) resample IDs
+  boot_ids <- sample(ids, length(ids), replace = TRUE) # randomly resamples the participant IDs with replacement (some IDs appear multiple times, others not at all).
+  boot_raw <- merge_se_select_scaled_reduced %>% filter(ID %in% boot_ids) # filters the full dataset (merge_se_select_scaled_reduced) to include only those resampled IDs, which forms the bootstrap dataset.
+
+  # 2) fit bayesian glmer
+  fit_b <- tryCatch( # tryCatch allows the code to continue running. So, if an iteration of brm() fails, it'll just return a NULL for that iteration (see error = function(e) NULL)
+    brm(
+      event_num ~ timeinbed_mean_school_night_pmean + timeinbed_sd_school_night_pmean + week_num_time_z_rescaled + (1 | ID),
+      data = boot_raw,
+      family = bernoulli(),
+      prior = c(
+        set_prior("normal(0,2)", class="b"),
+        set_prior("student_t(3,0,2.5)", class="sd")
+      ), # MCMC settings below (1000 iterations for each chain)
+      chains = 2, iter = 1000, refresh = 0, backend = "cmdstanr", # refresh = 0 suppresses console output and cmdstanr executes faster sampling
+      control = list(adapt_delta = 0.99, max_treedepth = 15)
+    ), # adapt delta 0.99 reduces divergent transitions, and max_treedepth = 15 allows longer HMC trajectories
+    error = function(e) NULL
+  )
+  
+  if (!is.null(fit_b)) { # If model fit succeeds, then extract fixed effects, diagnostics, counts divergences, etc. and return all results
+    
+    # extract fixed effects
+    est <- fixef(fit_b, summary = TRUE)[, "Estimate"] # extracts the posterior mean estimates of the fixed effects
+    est_full <- setNames(rep(NA, length(all_terms)), all_terms) # ensures all predictors are returned
+    est_full[names(est)] <- est # fills in the actual estimates for the terms that exist
+    
+    # extract diagnostics
+    draws_arr <- as_draws_array(fit_b) # Converts posterior samples into an array
+    
+    # Rhat and ESS from posterior package
+    rhat_vals <- rhat(draws_arr) # checks convergence between chains (<1.01 is good).
+    ess_bulk_vals <- ess_bulk(draws_arr) # effective sample size for central and tail posterior regions. Lower ESS means there was poorer mixing
+    ess_tail_vals <- ess_tail(draws_arr)
+    
+    # divergences (using cmdstanr)
+    divs <- if (!is.null(fit_b$diagnostics$Sampler)) {
+      sum(fit_b$diagnostics$Sampler[, "divergent__"]) # If diagnostics are available, it counts the number of divergent transitions; otherwise returns NA.
+    } else {
+      NA_integer_
+    }
+    
+    # posterior evidence (P(β > 0))
+    draws_df <- as_draws_df(fit_b) # converts the fitted model's posterior samples (fit_b) into a df where each col corresponds to a model parameter, and each row corresponds to one posterior draw (sample) from the MCMC chains. So, each column represents posterior uncertainty about a parameter.
+    beta_terms <- names(draws_df)[grepl("^b_", names(draws_df))]  # fixed-effect terms only, names returns all column/parameter names
+    
+    ppos_vals <- sapply(beta_terms, function(term) { # loops over each beta_term fixed effect
+      mean(draws_df[[term]] > 0, na.rm = TRUE) # draws_df[[term]] extracts all posterior draws for that parameter, and the mean computes the proportion of draws greater than 0, which is the posterior probability that the effect is positive P(β>0∣data).
+    }) # ppos_vals is a vector with each term and corresponding posterior probability
+    
+    ppos_full <- setNames(rep(NA, length(all_terms)), all_terms) # outputs a vector of NA values with names matching all the model terms you expect from all_terms; if some parameter failed to estimate, the output will always include the same set of term names 
+
+    names_map <- gsub("^b_", "", names(ppos_vals))
+    ppos_full[names_map] <- ppos_vals # filling in ppos_full with the probabilities in ppos_vals
+    
+    return(list( # saves results into a list - one entry per bootstrap iteration
+      estimates = est_full,
+      rhat = rhat_vals,
+      ess_bulk = ess_bulk_vals,
+      ess_tail = ess_tail_vals,
+      divergences = divs,
+      p_pos = ppos_full # evidence probabilities      
+    ))
+    
+  } else {
+    # If model fit failed: return NAs
+    return(list(
+      estimates = setNames(rep(NA, length(all_terms)), all_terms),
+      rhat = NA, ess_bulk = NA, ess_tail = NA, divergences = NA
+    ))
+  }
+  
+}, .progress = TRUE, .options = furrr_options(seed = TRUE))
+
+# Extract just estimates from each replicate
+estimates_list <- lapply(boot_results, `[[`, "estimates") # applies the boot_results function to each element of the list
+
+
+boot_mat <- do.call(rbind, estimates_list) # converts the estimates list into a matrix (each row is a bootstrap replicate, each column is a parameter estimate)
+
+dim(boot_mat)
+head(boot_mat)
+
+ppos_list <- lapply(boot_results, `[[`, "p_pos")
+ppos_mat  <- do.call(rbind, ppos_list)
+
+boot_mat_clean <- boot_mat[complete.cases(boot_mat), ] # returns complete cases
+ppos_mat_clean  <- ppos_mat[complete.cases(ppos_mat), ]
+
+
+boot_summary <- apply(boot_mat_clean, 2, function(x) { # applies a function across columns of a matrix, which is each parameter's bootstrap estimate)
+  c(
+    q025   = quantile(x, 0.025, na.rm = TRUE),
+    median = median(x, na.rm = TRUE),
+    q975   = quantile(x, 0.975, na.rm = TRUE)
+  )
+})
+
+boot_summary <- t(boot_summary) # transpose
+boot_summary
+
+# Posterior evidence summary (stability of effect sign)
+ppos_summary <- apply(ppos_mat_clean, 2, function(x) {
+  c(
+    median_p_pos = median(x, na.rm = TRUE),
+    q025_p_pos   = quantile(x, 0.025, na.rm = TRUE),
+    q975_p_pos   = quantile(x, 0.975, na.rm = TRUE),
+    prop_strong  = mean(x > 0.95, na.rm = TRUE)
+  )
+})
+ppos_summary <- t(ppos_summary)
+
+
+# Rhat
+rhat_list <- lapply(boot_results, `[[`, "rhat")
+rhat_mat  <- do.call(rbind, rhat_list)
+
+# ESS (bulk & tail)
+ess_bulk_list <- lapply(boot_results, `[[`, "ess_bulk")
+ess_tail_list <- lapply(boot_results, `[[`, "ess_tail")
+
+ess_bulk_mat <- do.call(rbind, ess_bulk_list)
+ess_tail_mat <- do.call(rbind, ess_tail_list)
+
+# Divergences
+divergences <- sapply(boot_results, `[[`, "divergences") # simplifies the result into a vector/matrix
+
+# Summarize Rhat across bootstraps (per parameter)
+rhat_summary <- apply(rhat_mat, 2, function(x) {
+  c(
+    mean   = mean(x, na.rm = TRUE),
+    median = median(x, na.rm = TRUE),
+    max    = max(x, na.rm = TRUE)
+  )
+})
+
+# Summarize ESS (bulk and tail)
+ess_bulk_summary <- apply(ess_bulk_mat, 2, median, na.rm = TRUE)
+ess_tail_summary <- apply(ess_tail_mat, 2, median, na.rm = TRUE)
+
+# Divergences (overall % of runs with any divergences)
+divergence_rate <- mean(divergences > 0, na.rm = TRUE)
+
+###  ^^^ gives you bootstrap distributions + Bayesian posteriors, so you can see both within-model uncertainty and across-sample variability.
+
+### Now we have a boot_mat (a matrix of bootstrapped coefficient means). Can convert into a table
+boot_long <- as.data.frame(boot_mat_clean) %>%
+  pivot_longer(cols = everything(), names_to = "term", values_to = "estimate") %>%
+  mutate(OR = exp(estimate))   # add odds ratio column
+
+boot_summary <- boot_long %>%
+  group_by(term) %>%
+  summarise(
+    median_logodds = median(estimate, na.rm = TRUE),
+    low95_logodds  = quantile(estimate, 0.025, na.rm = TRUE),
+    high95_logodds = quantile(estimate, 0.975, na.rm = TRUE),
+    median_OR = median(OR, na.rm = TRUE),
+    low95_OR  = quantile(OR, 0.025, na.rm = TRUE),
+    high95_OR = quantile(OR, 0.975, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Compute bootstrap CIs
+ boot_summary %>%
+   dplyr::mutate(
+      term = dplyr::recode(
+        term,
+        'Intercept' = 'Intercept',
+        'timeinbed_mean_school_night_pmean' = 'Within-Person Average \n Sleep Duration \n  on Weekdays (Mean)',
+        'timeinbed_sd_school_night_pmean' = 'Within-Person Variability \n of Sleep Duration \n on Weekdays (Mean)',
+        'week_num_time_z_rescaled' = 'Mean Week Number'
+        )
+      ) %>%
+   ggplot(
+     aes(x = term, y = median_OR)
+   ) +
+  geom_pointrange(aes(ymin = low95_OR, ymax = high95_OR), color = "#F5B041") +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "#999999") +
+  coord_flip() +
+  scale_y_log10() +  # log scale to handle wide OR ranges
+  theme_classic() +
+  theme(
+    strip.text.y = element_blank(),
+    axis.text.x = element_text(colour = "black"),
+    axis.text.y = element_text(colour = "black") 
+    ) +
+  labs(
+    title = "Bootstrap 95% CIs for Odds Ratios",
+    y = "Odds Ratio (log scale)",
+    x = "Coefficient"
+    ) 
+ggsave("or_se_plot_bootstrapped.jpeg", width = 5, height = 3)
+# OR = 1 means no effect (the dashed red line).
+# If the 95% CI doesn’t cross 1, we can maybe conclude that the predictor has a robust effect across bootstraps.
+
+# If we want to visualize posterior evidence stability
+library(ggplot2)
+ppos_long <- as.data.frame(ppos_mat_clean) %>%
+  pivot_longer(cols = everything(), names_to = "term", values_to = "p_pos")
+
+ppos_long %>%
+   dplyr::mutate(
+      term = dplyr::recode(
+        term,
+        'Intercept' = 'Intercept',
+        'timeinbed_mean_school_night_pmean' = 'Within-Person Average \n Sleep Duration \n  on Weekdays (Mean)',
+        'timeinbed_sd_school_night_pmean' = 'Within-Person Variability \n of Sleep Duration \n on Weekdays (Mean)',
+        'week_num_time_z_rescaled' = 'Mean Week Number'
+        )
+      ) %>%
+  ggplot(
+    aes(x = p_pos, fill = term)
+  ) +
+  geom_boxplot() +
+  geom_vline(xintercept = 0.95, linetype = "dashed") + # The proportion of bootstraps where evidence was “strong” (likely p_pos > 0.95).
+  labs(
+    x = expression(paste("Posterior probability ", beta, " > 0")),
+    y = "Bootstrap count",
+    title = "Stability of effect evidence across bootstraps"
+  ) +
+  scale_fill_manual(values = colorpalette) +
+  theme_classic() + 
+  theme(
+    strip.text.y = element_blank(),
+    axis.text.x = element_text(colour = "black"),
+    axis.text.y = element_text(colour = "black") 
+    )
+ggsave("stability_bootstrap.jpeg", width = 5, height = 3)
+
+ppos_summary_df <-  as_tibble(ppos_summary, rownames = "term")
+
+ppos_summary_df <- 
+  ppos_summary_df %>%  
+mutate(
+    term = recode(
+      term,
+      'Intercept' = 'Intercept',
+      'timeinbed_mean_school_night_pmean' = 'Within-Person Average \nSleep Duration (Weekdays)',
+      'timeinbed_sd_school_night_pmean' = 'Within-Person Variability \nSleep Duration (Weekdays)',
+      'week_num_time_z_rescaled' = 'Mean Week Number'
+    )
+  ) %>%
+  ggplot(aes(
+    x = term,
+    y = median_p_pos
+  )) +
+  geom_pointrange(
+    aes(
+      ymin = `q025_p_pos.2.5%`,
+      ymax = `q975_p_pos.97.5%`
+    ),
+    color = "#2E86AB",
+    size = 1
+  ) +
+  geom_hline(yintercept = 0.95, linetype = "dashed", color = "#999999") +
+  geom_hline(yintercept = 0.5, linetype = "dotted", color = "#BBBBBB") +
+  coord_flip() +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent) +
+  theme_classic(base_size = 14) +
+  labs(
+    title = "Posterior Probability of Positive Effect (p_pos)",
+    subtitle = "Across bootstrapped Bayesian GLMMs",
+    x = "",
+    y = "Probability(β > 0)",
+    caption = "Dashed line = 0.95 threshold for 'strong evidence'"
+  )
+ppos_summary_df
+```
